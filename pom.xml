@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.pcc</groupId>
+    <artifactId>pcc-security-check-lovable-stack</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>PccSecurityCheckLovableStack</name>
+    <description>Kotlin/JVM security checks for React + Supabase ("Lovable") stacks.</description>
+
+    <properties>
+        <kotlin.version>2.0.21</kotlin.version>
+        <kotlinx.serialization.version>1.7.3</kotlinx.serialization.version>
+        <kotlinx.html.version>0.11.0</kotlinx.html.version>
+        <logback.version>1.5.12</logback.version>
+        <kotlin.logging.version>7.0.0</kotlin.logging.version>
+        <junit.version>5.10.2</junit.version>
+        <exec.plugin.version>3.5.0</exec.plugin.version>
+        <surefire.version>3.5.0</surefire.version>
+
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-serialization-json-jvm</artifactId>
+            <version>${kotlinx.serialization.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-html-jvm</artifactId>
+            <version>${kotlinx.html.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.oshai</groupId>
+            <artifactId>kotlin-logging-jvm</artifactId>
+            <version>${kotlin.logging.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <version>${logback.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-test-junit5</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+        <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
+        <resources>
+            <resource>
+                <directory>${project.basedir}/src/main/resources</directory>
+            </resource>
+        </resources>
+
+        <plugins>
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <version>${kotlin.version}</version>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <phase>compile</phase>
+                        <goals><goal>compile</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>test-compile</id>
+                        <phase>test-compile</phase>
+                        <goals><goal>test-compile</goal></goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <jvmTarget>17</jvmTarget>
+                    <args>
+                        <arg>-Xjsr305=strict</arg>
+                    </args>
+                    <compilerPlugins>
+                        <plugin>kotlinx-serialization</plugin>
+                    </compilerPlugins>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.jetbrains.kotlin</groupId>
+                        <artifactId>kotlin-maven-serialization</artifactId>
+                        <version>${kotlin.version}</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${surefire.version}</version>
+            </plugin>
+
+            <!--
+              Run main classes via:
+                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@all
+                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@anon-read-exposure
+                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@config-sanity
+              (or pass -Dsupabase.service.role.key=eyJh... instead of the env var)
+              Override config path with:
+                mvn -q compile exec:java@all -Dsupabase.config.file=/abs/path.properties
+              The service role key is NEVER read from a properties file.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>${exec.plugin.version}</version>
+                <executions>
+                    <execution>
+                        <id>all</id>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <mainClass>cloud.parlisoncodecouture.securitycheck.main.RunAllChecksKt</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>anon-read-exposure</id>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <mainClass>cloud.parlisoncodecouture.securitycheck.main.RunAnonReadExposureKt</mainClass>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>config-sanity</id>
+                        <goals><goal>java</goal></goals>
+                        <configuration>
+                            <mainClass>cloud.parlisoncodecouture.securitycheck.main.RunConfigSanityKt</mainClass>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
