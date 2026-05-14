@@ -50,6 +50,13 @@ object ConfigLoader {
             ?: inferProjectRef(url)
         val connectTimeout = props.getProperty("http.connect.timeout.seconds")?.toLongOrNull() ?: 10L
         val requestTimeout = props.getProperty("http.request.timeout.seconds")?.toLongOrNull() ?: 20L
+
+        val frontendUrl = props.getProperty("frontend.url")?.trim()?.ifBlank { null }
+        val functionsPath = props.getProperty("functions.path")
+            ?.trim()?.ifBlank { null }?.let { Path.of(it).toAbsolutePath() }
+        val migrationsPath = props.getProperty("migrations.path")
+            ?.trim()?.ifBlank { null }?.let { Path.of(it).toAbsolutePath() }
+
         return SupabaseConfig(
             url = url.trimEnd('/'),
             anonKey = anonKey,
@@ -57,6 +64,9 @@ object ConfigLoader {
             projectRef = projectRef,
             connectTimeoutSeconds = connectTimeout,
             requestTimeoutSeconds = requestTimeout,
+            frontendUrl = frontendUrl,
+            functionsPath = functionsPath,
+            migrationsPath = migrationsPath,
         )
     }
 
@@ -102,8 +112,8 @@ class ServiceRoleKeyMissingException : RuntimeException(
     For security reasons this key is NEVER read from a file on disk.
     Provide it at runtime via one of:
 
-      env:  SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@all
-      jvm:  mvn -q compile exec:java@all -Dsupabase.service.role.key=eyJh...
+      env:  SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java
+      jvm:  mvn -q compile exec:java -Dsupabase.service.role.key=eyJh...
 
     In IntelliJ: edit the run configuration, add the env variable or
     "-Dsupabase.service.role.key=..." under "VM options".

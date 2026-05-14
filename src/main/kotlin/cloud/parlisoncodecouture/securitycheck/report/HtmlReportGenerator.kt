@@ -20,6 +20,7 @@ import kotlinx.html.li
 import kotlinx.html.meta
 import kotlinx.html.p
 import kotlinx.html.pre
+import kotlinx.html.script
 import kotlinx.html.small
 import kotlinx.html.span
 import kotlinx.html.strong
@@ -87,12 +88,25 @@ class HtmlReportGenerator(
                         +"Gesamtbewertung: ${overall.label}"
                     }
                     div("counts") {
-                        listOf(CheckStatus.GREEN, CheckStatus.YELLOW, CheckStatus.RED, CheckStatus.ERROR).forEach { st ->
+                        attributes["id"] = "status-filter"
+                        span("filter-hint") { +"Filter (klick zum Toggle):" }
+                        listOf(
+                            CheckStatus.GREEN,
+                            CheckStatus.YELLOW,
+                            CheckStatus.RED,
+                            CheckStatus.ERROR,
+                            CheckStatus.SKIPPED,
+                        ).forEach { st ->
                             val n = results.count { it.status == st }
-                            span("badge") {
+                            span("badge filter-badge") {
                                 attributes["style"] = "background:${st.color}"
+                                attributes["data-status"] = st.name
                                 +"${st.name}: $n"
                             }
+                        }
+                        span("filter-reset") {
+                            attributes["id"] = "filter-reset"
+                            +"Alle zeigen"
                         }
                     }
                 }
@@ -107,11 +121,47 @@ class HtmlReportGenerator(
                     small { +"Generiert von PccSecurityCheckLovableStack" }
                 }
             }
+            script { unsafe { +inlineFilterScript() } }
         }
     }
 
+    private fun inlineFilterScript(): String = """
+        (function() {
+          var badges = document.querySelectorAll('.filter-badge');
+          var checks = document.querySelectorAll('.check');
+          var resetBtn = document.getElementById('filter-reset');
+          var active = {}; // empty = no filter, otherwise only statuses with active[status]===true are shown
+          function isAnyActive() { for (var k in active) if (active[k]) return true; return false; }
+          function apply() {
+            var anyActive = isAnyActive();
+            badges.forEach(function(b) {
+              var s = b.getAttribute('data-status');
+              if (!anyActive || active[s]) { b.classList.remove('inactive'); }
+              else { b.classList.add('inactive'); }
+            });
+            checks.forEach(function(c) {
+              var s = c.getAttribute('data-status');
+              if (!anyActive || active[s]) { c.classList.remove('hidden'); }
+              else { c.classList.add('hidden'); }
+            });
+            if (resetBtn) { if (anyActive) resetBtn.classList.add('visible'); else resetBtn.classList.remove('visible'); }
+          }
+          badges.forEach(function(b) {
+            b.addEventListener('click', function() {
+              var s = b.getAttribute('data-status');
+              active[s] = !active[s];
+              apply();
+            });
+          });
+          if (resetBtn) {
+            resetBtn.addEventListener('click', function() { active = {}; apply(); });
+          }
+        })();
+    """.trimIndent()
+
     private fun FlowContent.renderCheck(result: CheckResult) {
         article("card check") {
+            attributes["data-status"] = result.status.name
             div("check-header") {
                 span("status-dot") { attributes["style"] = "background:${result.status.color}" }
                 div("check-title-block") {
@@ -172,8 +222,15 @@ class HtmlReportGenerator(
         .report-header h1 { margin: 0 0 8px; font-size: 24px; }
         .meta span { display: inline-block; margin-right: 16px; font-size: 13px; color: #6b7280; }
         .overall { display: inline-block; padding: 10px 16px; border-radius: 6px; color: white; font-weight: 600; margin: 12px 0 8px; }
-        .counts { margin-top: 6px; }
-        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; color: white; font-size: 12px; font-weight: 600; margin-right: 6px; }
+        .counts { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 12px; color: white; font-size: 12px; font-weight: 600; }
+        .filter-hint { font-size: 12px; color: #6b7280; margin-right: 4px; }
+        .filter-badge { cursor: pointer; user-select: none; transition: opacity 0.15s, transform 0.05s; }
+        .filter-badge:hover { transform: translateY(-1px); }
+        .filter-badge.inactive { opacity: 0.3; }
+        .filter-reset { font-size: 12px; color: #2563eb; cursor: pointer; text-decoration: underline; margin-left: 8px; display: none; }
+        .filter-reset.visible { display: inline; }
+        .check.hidden { display: none; }
         .check-header { display: flex; align-items: center; gap: 12px; }
         .check-title-block { flex-grow: 1; }
         .check-header h2 { margin: 0; font-size: 18px; }

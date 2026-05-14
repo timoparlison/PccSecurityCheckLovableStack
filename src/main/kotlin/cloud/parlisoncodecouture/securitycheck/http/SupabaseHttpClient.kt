@@ -18,7 +18,7 @@ data class HttpResult(
 class SupabaseHttpClient(private val config: SupabaseConfig) {
     private val client: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(config.connectTimeoutSeconds))
-        .followRedirects(HttpClient.Redirect.NEVER)
+        .followRedirects(HttpClient.Redirect.NORMAL)
         .build()
 
     fun getWithKey(
@@ -32,6 +32,35 @@ class SupabaseHttpClient(private val config: SupabaseConfig) {
             .header("apikey", apiKey)
             .header("Authorization", "Bearer $apiKey")
             .header("Accept", "application/json")
+            .GET()
+        extraHeaders.forEach { (k, v) -> builder.header(k, v) }
+        return execute(builder.build())
+    }
+
+    fun postJsonWithKey(
+        path: String,
+        apiKey: String,
+        jsonBody: String,
+        extraHeaders: Map<String, String> = emptyMap(),
+    ): HttpResult {
+        val url = resolveUrl(path)
+        val builder = HttpRequest.newBuilder(URI.create(url))
+            .timeout(Duration.ofSeconds(config.requestTimeoutSeconds))
+            .header("apikey", apiKey)
+            .header("Authorization", "Bearer $apiKey")
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+        extraHeaders.forEach { (k, v) -> builder.header(k, v) }
+        return execute(builder.build())
+    }
+
+    /** GET an arbitrary absolute URL without Supabase auth headers (e.g. frontend bundles). */
+    fun getAbsolute(absoluteUrl: String, extraHeaders: Map<String, String> = emptyMap()): HttpResult {
+        val builder = HttpRequest.newBuilder(URI.create(absoluteUrl))
+            .timeout(Duration.ofSeconds(config.requestTimeoutSeconds))
+            .header("Accept", "*/*")
+            .header("User-Agent", "PccSecurityCheckLovableStack/0.1")
             .GET()
         extraHeaders.forEach { (k, v) -> builder.header(k, v) }
         return execute(builder.build())
