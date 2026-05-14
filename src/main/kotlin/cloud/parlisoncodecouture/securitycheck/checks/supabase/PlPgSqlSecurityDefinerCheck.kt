@@ -29,8 +29,10 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
             "EXECUTE-Calls (USING) statt format()-Konkatenation."
     override val category = "Supabase / DB Functions"
 
+    // Dollar-Quote-Tag (Gruppe 3) ist beliebig (\w*), Schluss-Tag matcht via Backreference \3.
+    // Damit erfasst die Regex sowohl $$...$$ als auch $func$...$func$, $body$...$body$ usw.
     private val funcRegex = Regex(
-        "CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+([\\w.]+)\\s*\\([^)]*\\)([\\s\\S]*?)\\\$\\\$([\\s\\S]*?)\\\$\\\$",
+        "CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+([\\w.]+)\\s*\\([^)]*\\)([\\s\\S]*?)\\\$(\\w*)\\\$([\\s\\S]*?)\\\$\\3\\\$",
         RegexOption.IGNORE_CASE,
     )
 
@@ -62,7 +64,8 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                 totalFunctions++
                 val functionName = match.groupValues[1]
                 val signatureAndOptions = match.groupValues[2]
-                val body = match.groupValues[3]
+                // groupValues[3] = Dollar-Tag (z. B. "", "func", "body") — nicht genutzt
+                val body = match.groupValues[4]
                 val fullBlock = match.value
 
                 val isSecdef = Regex("""\bSECURITY\s+DEFINER\b""", RegexOption.IGNORE_CASE).containsMatchIn(signatureAndOptions)

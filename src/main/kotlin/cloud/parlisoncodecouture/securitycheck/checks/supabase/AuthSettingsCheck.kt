@@ -11,6 +11,7 @@ import cloud.parlisoncodecouture.securitycheck.http.SupabaseHttpClient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.time.Instant
@@ -23,8 +24,14 @@ class AuthSettingsCheck @JvmOverloads constructor(
     override val name = "Auth-Settings Audit"
     override val description =
         "Liest /auth/v1/settings (anon) und bewertet typische Risiken: offene Signups ohne Mail-Verification, " +
-            "Auto-Confirm aktiv, sehr permissive OAuth-Provider-Konfiguration."
+            "Auto-Confirm aktiv, sehr permissive OAuth-Provider-Konfiguration, schwache Passwort-" +
+            "Mindestlänge (< 8), fehlende MFA-Aktivierung. Hinweis: Supabase exponiert die Passwort-/MFA-" +
+            "Felder erst ab bestimmten GoTrue-Versionen — fehlende Felder werden informativ behandelt."
     override val category = "Supabase / Auth"
+
+    private companion object {
+        const val MIN_PASSWORD_LENGTH = 8
+    }
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -111,9 +118,62 @@ class AuthSettingsCheck @JvmOverloads constructor(
             }
         }
 
+        val pwMin = settings["password_min_length"]?.jsonPrimitive?.intOrNull
+        when {
+            pwMin == null -> findings += Finding(
+                CheckStatus.YELLOW,
+                "Passwort-Mindestlänge nicht ausgelesen",
+                "Das Feld 'password_min_length' fehlt in /auth/v1/settings. Entweder ältere GoTrue-Version " +
+                    "oder bewusst nicht exponiert. Im Supabase-Dashboard prüfen, dass mindestens 8 Zeichen " +
+                    "erzwungen werden.",
+            )
+            pwMin < MIN_PASSWORD_LENGTH -> findings += Finding(
+                CheckStatus.YELLOW,
+                "Passwort-Mindestlänge zu kurz: $pwMin",
+                "Mindestlänge $pwMin Zeichen ist unterhalb des allgemein empfohlenen Minimums von " +
+                    "$MIN_PASSWORD_LENGTH (BSI/NIST). Im Dashboard erhöhen.",
+            )
+            else -> findings += Finding(
+                CheckStatus.GREEN,
+                "Passwort-Mindestlänge: $pwMin",
+                "Mindestens $MIN_PASSWORD_LENGTH wird empfohlen — erfüllt.",
+            )
+        }
+
+        // MFA wird in Supabase üblicherweise als Feature-Flag exponiert.
+        // Mögliche Feldnamen je nach Version: mfa_enabled, mfa.totp.enroll_enabled, …
+        val mfaEnabled = settings["mfa_enabled"]?.jsonPrimitive?.booleanOrNull
+            ?: (settings["mfa"] as? JsonObject)?.let { mfa ->
+                val totp = (mfa["totp"] as? JsonObject)?.get("enroll_enabled")?.jsonPrimitive?.booleanOrNull
+                val webauthn = (mfa["web_authn"] as? JsonObject)?.get("enroll_enabled")?.jsonPrimitive?.booleanOrNull
+                listOfNotNull(totp, webauthn).any { it }.takeIf { totp != null || webauthn != null }
+            }
+        when (mfaEnabled) {
+            true -> findings += Finding(
+                CheckStatus.GREEN,
+                "MFA-Enrollment aktiviert",
+                "User können einen zweiten Faktor aktivieren. Anwendungslogik sollte für sensible Aktionen " +
+                    "(Account-Settings, Payment) MFA erzwingen.",
+            )
+            false -> findings += Finding(
+                CheckStatus.YELLOW,
+                "MFA-Enrollment ist deaktiviert",
+                "User können keinen zweiten Faktor hinzufügen. Bei Accounts mit Admin-Rollen erhebliches " +
+                    "Risiko bei Credential-Stuffing.",
+            )
+            null -> findings += Finding(
+                CheckStatus.YELLOW,
+                "MFA-Status nicht auslesbar",
+                "Weder 'mfa_enabled' noch 'mfa.totp.enroll_enabled' in /auth/v1/settings vorhanden. Im " +
+                    "Supabase-Dashboard unter Authentication → Multi-Factor manuell prüfen.",
+            )
+        }
+
         val summary = buildString {
             append("disable_signup=$disableSignup, mailer_autoconfirm=$mailerAutoconfirm")
             if (phoneAutoconfirm) append(", phone_autoconfirm=true")
+            if (pwMin != null) append(", password_min_length=$pwMin")
+            if (mfaEnabled != null) append(", mfa=$mfaEnabled")
         }
         return resultOf(findings, summary, start)
     }

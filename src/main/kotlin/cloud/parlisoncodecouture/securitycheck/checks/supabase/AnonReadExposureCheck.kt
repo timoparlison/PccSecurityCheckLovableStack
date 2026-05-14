@@ -75,7 +75,30 @@ class AnonReadExposureCheck @JvmOverloads constructor(
             )
         }
 
-        val tables = parseTableNames(specResponse.body)
+        val parseResult = parseTableNames(specResponse.body)
+        val tables = when (parseResult) {
+            is TableParseResult.Ok -> parseResult.tables
+            is TableParseResult.Failed -> {
+                findings += Finding(
+                    CheckStatus.YELLOW,
+                    "OpenAPI-Spec konnte nicht geparst werden",
+                    "Service-Role hat HTTP ${specResponse.statusCode} geliefert, aber die Antwort entspricht " +
+                        "nicht dem erwarteten OpenAPI-Schema (definitions-Map). Grund: ${parseResult.reason}. " +
+                        "Anonymes Probing konnte deshalb NICHT durchgeführt werden — der Check ist nicht " +
+                        "aussagekräftig, manuell prüfen.",
+                    evidence = specResponse.body.take(400),
+                )
+                return CheckResult(
+                    checkId = id, checkName = name, checkDescription = description, category = category,
+                    status = CheckStatus.YELLOW,
+                    summary = "Schema-Parsing fehlgeschlagen (${parseResult.reason}). Anon-Probing nicht durchgeführt.",
+                    findings = findings,
+                    executedAt = start,
+                    durationMs = Duration.between(start, Instant.now()).toMillis(),
+                )
+            }
+        }
+
         findings += Finding(
             CheckStatus.GREEN,
             "Discovery: ${tables.size} Tabelle(n) über Service-Role gefunden",
@@ -185,11 +208,19 @@ class AnonReadExposureCheck @JvmOverloads constructor(
         )
     }
 
-    private fun parseTableNames(specBody: String): List<String> = runCatching {
-        val root = json.parseToJsonElement(specBody).jsonObject
-        val definitions = root["definitions"] as? JsonObject ?: return emptyList()
-        definitions.keys.toList().sorted()
-    }.getOrElse { emptyList() }
+    private sealed class TableParseResult {
+        data class Ok(val tables: List<String>) : TableParseResult()
+        data class Failed(val reason: String) : TableParseResult()
+    }
+
+    private fun parseTableNames(specBody: String): TableParseResult {
+        val root = runCatching { json.parseToJsonElement(specBody).jsonObject }.getOrElse { ex ->
+            return TableParseResult.Failed("kein JSON-Object: ${ex.message ?: ex::class.simpleName}")
+        }
+        val definitions = root["definitions"] as? JsonObject
+            ?: return TableParseResult.Failed("Feld 'definitions' fehlt oder ist kein Object")
+        return TableParseResult.Ok(definitions.keys.toList().sorted())
+    }
 
     private fun countRows(body: String): Int = runCatching {
         (json.parseToJsonElement(body) as? JsonArray)?.size ?: 0
