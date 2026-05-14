@@ -19,6 +19,7 @@
         <logback.version>1.5.12</logback.version>
         <kotlin.logging.version>7.0.0</kotlin.logging.version>
         <classgraph.version>4.8.179</classgraph.version>
+        <postgresql.version>42.7.4</postgresql.version>
         <junit.version>5.10.2</junit.version>
         <exec.plugin.version>3.5.0</exec.plugin.version>
         <surefire.version>3.5.0</surefire.version>
@@ -58,6 +59,11 @@
             <groupId>io.github.classgraph</groupId>
             <artifactId>classgraph</artifactId>
             <version>${classgraph.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
         </dependency>
 
         <dependency>

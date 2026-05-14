@@ -15,6 +15,9 @@ object ConfigLoader {
     private const val SERVICE_ROLE_ENV = "SUPABASE_SERVICE_ROLE_KEY"
     private const val SERVICE_ROLE_PROP = "supabase.service.role.key"
 
+    private const val DB_PASSWORD_ENV = "SUPABASE_DB_PASSWORD"
+    private const val DB_PASSWORD_PROP = "supabase.db.password"
+
     fun load(explicitPath: String? = null): SupabaseConfig {
         val path = resolvePath(explicitPath)
         if (!Files.exists(path)) throw ConfigNotFoundException(path)
@@ -35,15 +38,12 @@ object ConfigLoader {
         val url = required(props, "supabase.url").also { validateUrl(it) }
         val anonKey = required(props, "supabase.anon.key")
 
-        if (props.getProperty(SERVICE_ROLE_PROP)?.isNotBlank() == true) {
-            log.warn {
-                "Eintrag '$SERVICE_ROLE_PROP' aus der Properties-Datei wird IGNORIERT. " +
-                    "Der Service-Role-Key darf nicht auf der Festplatte liegen — " +
-                    "übergib ihn per Env $SERVICE_ROLE_ENV oder -D$SERVICE_ROLE_PROP=..."
-            }
-        }
+        warnIfSecretInFile(props, SERVICE_ROLE_PROP, SERVICE_ROLE_ENV)
+        warnIfSecretInFile(props, DB_PASSWORD_PROP, DB_PASSWORD_ENV)
 
-        val serviceRoleKey = readServiceRoleKeyFromRuntime()
+        val serviceRoleKey = readRuntimeSecret(SERVICE_ROLE_ENV, SERVICE_ROLE_PROP)
+            ?: throw ServiceRoleKeyMissingException()
+        val dbPassword = readRuntimeSecret(DB_PASSWORD_ENV, DB_PASSWORD_PROP) // optional
 
         val projectRef = props.getProperty("supabase.project.ref")
             ?.trim()?.ifBlank { null }
@@ -57,6 +57,11 @@ object ConfigLoader {
         val migrationsPath = props.getProperty("migrations.path")
             ?.trim()?.ifBlank { null }?.let { Path.of(it).toAbsolutePath() }
 
+        val dbHost = props.getProperty("db.host")?.trim()?.ifBlank { null }
+        val dbPort = props.getProperty("db.port")?.toIntOrNull() ?: 5432
+        val dbName = props.getProperty("db.name")?.trim()?.ifBlank { null } ?: "postgres"
+        val dbUser = props.getProperty("db.user")?.trim()?.ifBlank { null } ?: "postgres"
+
         return SupabaseConfig(
             url = url.trimEnd('/'),
             anonKey = anonKey,
@@ -67,13 +72,27 @@ object ConfigLoader {
             frontendUrl = frontendUrl,
             functionsPath = functionsPath,
             migrationsPath = migrationsPath,
+            dbHost = dbHost,
+            dbPort = dbPort,
+            dbName = dbName,
+            dbUser = dbUser,
+            dbPassword = dbPassword,
         )
     }
 
-    private fun readServiceRoleKeyFromRuntime(): String {
-        val fromEnv = System.getenv(SERVICE_ROLE_ENV)?.trim()?.ifEmpty { null }
-        val fromProp = System.getProperty(SERVICE_ROLE_PROP)?.trim()?.ifEmpty { null }
-        return fromEnv ?: fromProp ?: throw ServiceRoleKeyMissingException()
+    private fun warnIfSecretInFile(props: Properties, key: String, envName: String) {
+        if (props.getProperty(key)?.isNotBlank() == true) {
+            log.warn {
+                "Eintrag '$key' aus der Properties-Datei wird IGNORIERT. " +
+                    "Secrets gehören nicht auf die Festplatte — übergib per Env $envName oder -D$key=..."
+            }
+        }
+    }
+
+    private fun readRuntimeSecret(envName: String, propName: String): String? {
+        val fromEnv = System.getenv(envName)?.trim()?.ifEmpty { null }
+        val fromProp = System.getProperty(propName)?.trim()?.ifEmpty { null }
+        return fromEnv ?: fromProp
     }
 
     private fun required(props: Properties, key: String): String {
