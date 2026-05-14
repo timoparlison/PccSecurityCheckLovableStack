@@ -28,13 +28,14 @@ fun main() {
     }
 
     val results = CheckRunner(toRun).runAll()
-    val label = requested ?: "all"
+    val profile = config.activeProfile ?: "unknown"
+    val label = if (requested != null) "$profile-$requested" else profile
     val reportPath = HtmlReportGenerator().writeReport(config, runLabel = label, results = results)
 
     val overall = CheckStatus.worstOf(results.map { it.status })
     println()
     println("=".repeat(72))
-    println("Lauf: $label  ·  Gesamtbewertung: $overall")
+    println("Profil: $profile  ·  Lauf: ${requested ?: "all"}  ·  Gesamtbewertung: $overall")
     results.forEach { println("  [${it.status}] ${it.checkName} — ${it.summary}") }
     println()
     println("HTML-Report: ${reportPath.toAbsolutePath().toUri()}")

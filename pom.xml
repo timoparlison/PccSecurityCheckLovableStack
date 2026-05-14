@@ -132,12 +132,12 @@
 
             <!--
               Run via:
-                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java
-              Run only one check (per @CheckId(name=...) on the check class):
-                SUPABASE_SERVICE_ROLE_KEY=eyJh... SINGLE_TEST=config-sanity   mvn -q compile exec:java
-                SUPABASE_SERVICE_ROLE_KEY=eyJh... SINGLE_TEST=anon-read-exposure mvn -q compile exec:java
-                (or pass -Dsingle.test=... instead of the env var)
-              Service role key is NEVER read from a properties file.
+                ACTIVE_PROFILE=fernau SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java
+              Loads config/supabase-<ACTIVE_PROFILE>.properties.
+              Only one check:
+                ACTIVE_PROFILE=fernau SINGLE_TEST=rls-status SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java
+              For rls-status / permissive-policies you also need SUPABASE_DB_PASSWORD.
+              Secrets are NEVER read from properties files.
             -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>

@@ -78,6 +78,7 @@ class HtmlReportGenerator(
                 header(classes = "card report-header") {
                     h1 { +"Supabase Security Check" }
                     div("meta") {
+                        span { +"Profil: ${config.activeProfile ?: "(direct)"}" }
                         span { +"Projekt: ${config.projectRef ?: "(unbekannt)"}" }
                         span { +"URL: ${config.url}" }
                         span { +"Lauf: $runLabel" }

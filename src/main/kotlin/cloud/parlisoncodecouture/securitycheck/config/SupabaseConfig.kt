@@ -3,6 +3,7 @@ package cloud.parlisoncodecouture.securitycheck.config
 import java.nio.file.Path
 
 data class SupabaseConfig(
+    val activeProfile: String?,
     val url: String,
     val anonKey: String,
     val serviceRoleKey: String,
@@ -21,7 +22,6 @@ data class SupabaseConfig(
     val baseUrl: String get() = url.trimEnd('/')
     val restBaseUrl: String get() = "$baseUrl/rest/v1"
 
-    /** Resolved host: explicit override, otherwise derived from projectRef. */
     fun resolvedDbHost(): String? = dbHost ?: projectRef?.let { "db.$it.supabase.co" }
 
     val hasDbAccess: Boolean

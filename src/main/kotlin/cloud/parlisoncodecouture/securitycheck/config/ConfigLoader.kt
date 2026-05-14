@@ -4,13 +4,19 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Properties
+import kotlin.io.path.name
 
 private val log = KotlinLogging.logger {}
 
 object ConfigLoader {
-    private const val DEFAULT_PATH = "config/supabase.properties"
-    private const val SYSTEM_PROPERTY = "supabase.config.file"
-    private const val ENV_VARIABLE = "SUPABASE_CONFIG_FILE"
+    private const val CONFIG_DIR = "config"
+    private val PROFILE_FILE_REGEX = Regex("""supabase-(.+)\.properties""")
+    private fun profileFile(profile: String) = "$CONFIG_DIR/supabase-$profile.properties"
+
+    private const val EXPLICIT_FILE_PROP = "supabase.config.file"
+    private const val EXPLICIT_FILE_ENV = "SUPABASE_CONFIG_FILE"
+    private const val PROFILE_ENV = "ACTIVE_PROFILE"
+    private const val PROFILE_PROP = "active.profile"
 
     private const val SERVICE_ROLE_ENV = "SUPABASE_SERVICE_ROLE_KEY"
     private const val SERVICE_ROLE_PROP = "supabase.service.role.key"
@@ -18,23 +24,45 @@ object ConfigLoader {
     private const val DB_PASSWORD_ENV = "SUPABASE_DB_PASSWORD"
     private const val DB_PASSWORD_PROP = "supabase.db.password"
 
-    fun load(explicitPath: String? = null): SupabaseConfig {
-        val path = resolvePath(explicitPath)
-        if (!Files.exists(path)) throw ConfigNotFoundException(path)
+    fun load(): SupabaseConfig {
+        val (path, profile) = resolveConfigPath()
+        if (!Files.exists(path)) throw ConfigNotFoundException(path, profile, discoverProfiles())
         val props = Properties()
         Files.newBufferedReader(path).use { props.load(it) }
-        return parse(props)
+        return parse(props, profile)
     }
 
-    private fun resolvePath(explicit: String?): Path {
-        val raw = explicit
-            ?: System.getProperty(SYSTEM_PROPERTY)
-            ?: System.getenv(ENV_VARIABLE)
-            ?: DEFAULT_PATH
-        return Path.of(raw).toAbsolutePath()
+    private fun resolveConfigPath(): Pair<Path, String?> {
+        // Priority: explicit file override > active profile.
+        val explicit = System.getProperty(EXPLICIT_FILE_PROP)?.trim()?.ifBlank { null }
+            ?: System.getenv(EXPLICIT_FILE_ENV)?.trim()?.ifBlank { null }
+        if (explicit != null) {
+            val path = Path.of(explicit).toAbsolutePath()
+            // Try to derive profile name from filename if it matches the convention.
+            val profile = PROFILE_FILE_REGEX.matchEntire(path.name)?.groupValues?.get(1)
+            return path to profile
+        }
+        val profile = System.getenv(PROFILE_ENV)?.trim()?.ifEmpty { null }
+            ?: System.getProperty(PROFILE_PROP)?.trim()?.ifEmpty { null }
+            ?: throw ActiveProfileMissingException(discoverProfiles())
+        return Path.of(profileFile(profile)).toAbsolutePath() to profile
     }
 
-    private fun parse(props: Properties): SupabaseConfig {
+    private fun discoverProfiles(): List<String> {
+        val dir = Path.of(CONFIG_DIR)
+        if (!Files.isDirectory(dir)) return emptyList()
+        return Files.list(dir).use { stream ->
+            stream
+                .map { it.fileName.toString() }
+                .map { PROFILE_FILE_REGEX.matchEntire(it)?.groupValues?.get(1) }
+                .filter { it != null }
+                .map { it!! }
+                .sorted()
+                .toList()
+        }
+    }
+
+    private fun parse(props: Properties, profile: String?): SupabaseConfig {
         val url = required(props, "supabase.url").also { validateUrl(it) }
         val anonKey = required(props, "supabase.anon.key")
 
@@ -43,7 +71,7 @@ object ConfigLoader {
 
         val serviceRoleKey = readRuntimeSecret(SERVICE_ROLE_ENV, SERVICE_ROLE_PROP)
             ?: throw ServiceRoleKeyMissingException()
-        val dbPassword = readRuntimeSecret(DB_PASSWORD_ENV, DB_PASSWORD_PROP) // optional
+        val dbPassword = readRuntimeSecret(DB_PASSWORD_ENV, DB_PASSWORD_PROP)
 
         val projectRef = props.getProperty("supabase.project.ref")
             ?.trim()?.ifBlank { null }
@@ -63,6 +91,7 @@ object ConfigLoader {
         val dbUser = props.getProperty("db.user")?.trim()?.ifBlank { null } ?: "postgres"
 
         return SupabaseConfig(
+            activeProfile = profile,
             url = url.trimEnd('/'),
             anonKey = anonKey,
             serviceRoleKey = serviceRoleKey,
@@ -111,17 +140,39 @@ object ConfigLoader {
         Regex("""https?://([^.]+)\.supabase\.co""").find(url)?.groupValues?.get(1)
 }
 
-class ConfigNotFoundException(path: Path) : RuntimeException(
-    """
-    Supabase config not found at: $path
+class ActiveProfileMissingException(availableProfiles: List<String>) : RuntimeException(
+    buildString {
+        appendLine("Active profile is not set.")
+        appendLine()
+        appendLine("Choose a profile via one of:")
+        appendLine("  env:  ACTIVE_PROFILE=<profile> mvn -q compile exec:java")
+        appendLine("  jvm:  mvn -q compile exec:java -Dactive.profile=<profile>")
+        appendLine()
+        if (availableProfiles.isEmpty()) {
+            appendLine("No profile properties files found in config/.")
+            appendLine("Create one by copying the example:")
+            appendLine("  cp config/supabase-example.properties config/supabase-<profile>.properties")
+        } else {
+            appendLine("Available profiles (found in config/):")
+            availableProfiles.forEach { appendLine("  - $it") }
+        }
+    }.trim()
+)
 
-    Create it by copying the example:
-      cp config/supabase.example.properties config/supabase.properties
-
-    Or override the path:
-      -Dsupabase.config.file=/abs/path/to.properties
-      or env SUPABASE_CONFIG_FILE=/abs/path/to.properties
-    """.trimIndent()
+class ConfigNotFoundException(path: Path, profile: String?, availableProfiles: List<String>) : RuntimeException(
+    buildString {
+        appendLine("Supabase config file not found:")
+        appendLine("  $path")
+        appendLine()
+        if (profile != null) appendLine("Requested profile: '$profile'")
+        if (availableProfiles.isEmpty()) {
+            appendLine("No profile files in config/ yet. Copy the example to create one:")
+            appendLine("  cp config/supabase-example.properties config/supabase-${profile ?: "<profile>"}.properties")
+        } else {
+            appendLine("Available profiles:")
+            availableProfiles.forEach { appendLine("  - $it") }
+        }
+    }.trim()
 )
 
 class ServiceRoleKeyMissingException : RuntimeException(

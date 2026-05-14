@@ -37,7 +37,7 @@ target/
 # Generated security reports
 /reports/
 
-# Secrets — NEVER commit real credentials.
-# Only the example file is tracked.
-config/supabase.properties
-config/*.local.properties
+# Profile properties — NEVER commit real customer configs.
+# Only the example template is tracked.
+config/supabase-*.properties
+!config/supabase-example.properties
