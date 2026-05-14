@@ -1,6 +1,7 @@
 package cloud.parlisoncodecouture.securitycheck.checks.supabase
 
 import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
+import cloud.parlisoncodecouture.securitycheck.core.CheckId
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
 import cloud.parlisoncodecouture.securitycheck.core.Finding
@@ -15,11 +16,11 @@ import java.time.Duration
 import java.time.Instant
 import java.util.Base64
 
-class ConfigSanityCheck(
+@CheckId(name = "config-sanity")
+class ConfigSanityCheck @JvmOverloads constructor(
     private val config: SupabaseConfig,
     private val httpClient: SupabaseHttpClient = SupabaseHttpClient(config),
 ) : SecurityCheck {
-    override val id = "supabase.config-sanity"
     override val name = "Supabase Konfiguration & Schlüssel-Plausibilität"
     override val description =
         "Prüft URL-Schema, JWT-Claims (role/iss/exp) für Anon- und Service-Role-Key " +

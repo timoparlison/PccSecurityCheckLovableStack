@@ -18,6 +18,7 @@
         <kotlinx.html.version>0.11.0</kotlinx.html.version>
         <logback.version>1.5.12</logback.version>
         <kotlin.logging.version>7.0.0</kotlin.logging.version>
+        <classgraph.version>4.8.179</classgraph.version>
         <junit.version>5.10.2</junit.version>
         <exec.plugin.version>3.5.0</exec.plugin.version>
         <surefire.version>3.5.0</surefire.version>
@@ -52,6 +53,11 @@
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
             <version>${logback.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.classgraph</groupId>
+            <artifactId>classgraph</artifactId>
+            <version>${classgraph.version}</version>
         </dependency>
 
         <dependency>
@@ -119,42 +125,21 @@
             </plugin>
 
             <!--
-              Run main classes via:
-                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@all
-                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@anon-read-exposure
-                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java@config-sanity
-              (or pass -Dsupabase.service.role.key=eyJh... instead of the env var)
-              Override config path with:
-                mvn -q compile exec:java@all -Dsupabase.config.file=/abs/path.properties
-              The service role key is NEVER read from a properties file.
+              Run via:
+                SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java
+              Run only one check (per @CheckId(name=...) on the check class):
+                SUPABASE_SERVICE_ROLE_KEY=eyJh... SINGLE_TEST=config-sanity   mvn -q compile exec:java
+                SUPABASE_SERVICE_ROLE_KEY=eyJh... SINGLE_TEST=anon-read-exposure mvn -q compile exec:java
+                (or pass -Dsingle.test=... instead of the env var)
+              Service role key is NEVER read from a properties file.
             -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>${exec.plugin.version}</version>
-                <executions>
-                    <execution>
-                        <id>all</id>
-                        <goals><goal>java</goal></goals>
-                        <configuration>
-                            <mainClass>cloud.parlisoncodecouture.securitycheck.main.RunAllChecksKt</mainClass>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>anon-read-exposure</id>
-                        <goals><goal>java</goal></goals>
-                        <configuration>
-                            <mainClass>cloud.parlisoncodecouture.securitycheck.main.RunAnonReadExposureKt</mainClass>
-                        </configuration>
-                    </execution>
-                    <execution>
-                        <id>config-sanity</id>
-                        <goals><goal>java</goal></goals>
-                        <configuration>
-                            <mainClass>cloud.parlisoncodecouture.securitycheck.main.RunConfigSanityKt</mainClass>
-                        </configuration>
-                    </execution>
-                </executions>
+                <configuration>
+                    <mainClass>cloud.parlisoncodecouture.securitycheck.main.MainKt</mainClass>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -1,6 +1,7 @@
 package cloud.parlisoncodecouture.securitycheck.checks.supabase
 
 import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
+import cloud.parlisoncodecouture.securitycheck.core.CheckId
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
 import cloud.parlisoncodecouture.securitycheck.core.Finding
@@ -13,18 +14,17 @@ import kotlinx.serialization.json.jsonObject
 import java.time.Duration
 import java.time.Instant
 
-class AnonReadExposureCheck(
-    private val config: cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig,
-    private val httpClient: cloud.parlisoncodecouture.securitycheck.http.SupabaseHttpClient = _root_ide_package_.cloud.parlisoncodecouture.securitycheck.http.SupabaseHttpClient(
-        config
-    ),
-) : cloud.parlisoncodecouture.securitycheck.core.SecurityCheck {
-    override val id = "supabase.anon-read-exposure"
+@CheckId(name = "anon-read-exposure")
+class AnonReadExposureCheck @JvmOverloads constructor(
+    private val config: SupabaseConfig,
+    private val httpClient: SupabaseHttpClient = SupabaseHttpClient(config),
+) : SecurityCheck {
     override val name = "Anonymer Lesezugriff auf Tabellen"
     override val description =
-        "Liest mit dem Anon-Key das OpenAPI-Schema der PostgREST-API (/rest/v1/) aus und probiert " +
-            "pro Tabelle einen GET ?limit=1. Tabellen mit sensiblen Namen (user, auth, secret, token, …) " +
-            "werden bei anonymem Zugriff härter bewertet."
+        "Discovery: enumeriert über den Service-Role-Key alle Tabellen aus der OpenAPI-Spec von /rest/v1/. " +
+            "Probing: ruft jede Tabelle anschließend MIT DEM ANON-KEY per GET ?limit=1 ab, um zu sehen, " +
+            "was ein unauthentifizierter Browser-Client tatsächlich lesen kann. Tabellen mit sensiblen " +
+            "Namen (user, auth, secret, token, …) werden bei anonymem Zugriff härter bewertet."
     override val category = "Supabase / RLS & API-Surface"
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -35,29 +35,36 @@ class AnonReadExposureCheck(
         "card", "bank", "audit", "log", "private",
     )
 
-    override fun run(): cloud.parlisoncodecouture.securitycheck.core.CheckResult {
+    override fun run(): CheckResult {
         val start = Instant.now()
-        val findings = mutableListOf<cloud.parlisoncodecouture.securitycheck.core.Finding>()
+        val findings = mutableListOf<Finding>()
 
-        val specResult = runCatching { httpClient.getWithKey("/rest/v1/", config.anonKey) }
+        // Discovery via SERVICE-ROLE: der Anon-Key kriegt die OpenAPI-Spec auf /rest/v1/
+        // bei Supabase-Standard-Härtung meistens nicht. Service-Role umgeht das.
+        val specResult = runCatching { httpClient.getWithKey("/rest/v1/", config.serviceRoleKey) }
         if (specResult.isFailure) {
             val ex = specResult.exceptionOrNull()
-            return errorResult(start, "OpenAPI-Spec konnte nicht abgerufen werden: ${ex?.message ?: ex?.javaClass?.simpleName}")
+            return errorResult(
+                start,
+                "OpenAPI-Spec konnte mit Service-Role-Key nicht abgerufen werden: " +
+                    "${ex?.message ?: ex?.javaClass?.simpleName}",
+            )
         }
         val specResponse = specResult.getOrNull()!!
 
         if (!specResponse.isSuccess) {
-            findings += _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.Finding(
-                _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.CheckStatus.YELLOW,
-                "OpenAPI-Spec nicht abrufbar (HTTP ${specResponse.statusCode})",
-                "GET /rest/v1/ liefert keinen Erfolgsstatus. Wenn die Spec bewusst deaktiviert ist, ist das " +
-                        "ein guter Default — die Tabellen-Aufzählung dieses Checks funktioniert dann aber nicht.",
+            findings += Finding(
+                CheckStatus.YELLOW,
+                "OpenAPI-Spec auch mit Service-Role-Key nicht abrufbar (HTTP ${specResponse.statusCode})",
+                "GET /rest/v1/ liefert mit der service_role-Rolle keinen Erfolgsstatus. Das ist " +
+                    "ungewöhnlich — service_role hat normalerweise uneingeschränkten Zugriff. " +
+                    "Ohne Spec können keine Tabellen für das Anon-Probing enumeriert werden.",
                 evidence = specResponse.body.take(400),
             )
-            return _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.CheckResult(
+            return CheckResult(
                 checkId = id, checkName = name, checkDescription = description, category = category,
-                status = _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.CheckStatus.YELLOW,
-                summary = "Schema konnte nicht enumeriert werden (HTTP ${specResponse.statusCode}). Manuelle Stichproben empfohlen.",
+                status = CheckStatus.YELLOW,
+                summary = "Schema-Discovery (Service-Role) fehlgeschlagen (HTTP ${specResponse.statusCode}). Manuelle Stichproben empfohlen.",
                 findings = findings,
                 executedAt = start,
                 durationMs = Duration.between(start, Instant.now()).toMillis(),
@@ -65,16 +72,18 @@ class AnonReadExposureCheck(
         }
 
         val tables = parseTableNames(specResponse.body)
+        findings += Finding(
+            CheckStatus.GREEN,
+            "Discovery: ${tables.size} Tabelle(n) über Service-Role gefunden",
+            "Die OpenAPI-Spec wurde mit dem Service-Role-Key geladen. Jede gefundene Tabelle wird " +
+                "anschließend mit dem Anon-Key auf öffentliche Lesbarkeit geprüft.",
+        )
+
         if (tables.isEmpty()) {
-            findings += _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.Finding(
-                _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.CheckStatus.GREEN,
-                "Keine Tabellen über die Anon-API erreichbar",
-                "Die OpenAPI-Spec enthält keine Definitionen — anonyme API-Surface ist leer.",
-            )
-            return _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.CheckResult(
+            return CheckResult(
                 checkId = id, checkName = name, checkDescription = description, category = category,
-                status = _root_ide_package_.cloud.parlisoncodecouture.securitycheck.core.CheckStatus.GREEN,
-                summary = "0 Tabellen anonym sichtbar.",
+                status = CheckStatus.GREEN,
+                summary = "0 Tabellen exponiert.",
                 findings = findings,
                 executedAt = start,
                 durationMs = Duration.between(start, Instant.now()).toMillis(),
