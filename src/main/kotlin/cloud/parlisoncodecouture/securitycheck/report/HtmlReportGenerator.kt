@@ -93,6 +93,7 @@ class HtmlReportGenerator(
                         span("filter-hint") { +"Filter (klick zum Toggle):" }
                         listOf(
                             CheckStatus.GREEN,
+                            CheckStatus.ACCEPTED,
                             CheckStatus.YELLOW,
                             CheckStatus.RED,
                             CheckStatus.ERROR,

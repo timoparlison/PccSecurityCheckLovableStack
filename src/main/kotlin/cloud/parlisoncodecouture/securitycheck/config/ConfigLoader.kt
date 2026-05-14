@@ -90,6 +90,9 @@ object ConfigLoader {
         val dbName = props.getProperty("db.name")?.trim()?.ifBlank { null } ?: "postgres"
         val dbUser = props.getProperty("db.user")?.trim()?.ifBlank { null } ?: "postgres"
 
+        val allowlistTables = parseCsvSet(props.getProperty("allowlist.tables"))
+        val allowlistBuckets = parseCsvSet(props.getProperty("allowlist.buckets"))
+
         return SupabaseConfig(
             activeProfile = profile,
             url = url.trimEnd('/'),
@@ -106,8 +109,17 @@ object ConfigLoader {
             dbName = dbName,
             dbUser = dbUser,
             dbPassword = dbPassword,
+            allowlistTables = allowlistTables,
+            allowlistBuckets = allowlistBuckets,
         )
     }
+
+    private fun parseCsvSet(raw: String?): Set<String> =
+        raw?.split(',')
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.toSet()
+            ?: emptySet()
 
     private fun warnIfSecretInFile(props: Properties, key: String, envName: String) {
         if (props.getProperty(key)?.isNotBlank() == true) {

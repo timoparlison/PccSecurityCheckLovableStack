@@ -120,8 +120,12 @@ class AnonReadExposureCheck @JvmOverloads constructor(
         var redCount = 0
         var yellowCount = 0
         var greenCount = 0
+        var acceptedCount = 0
 
         log.info { "Discovery fertig: ${tables.size} Tabelle(n) gefunden — starte anonymous probing" }
+        if (config.allowlistTables.isNotEmpty()) {
+            log.info { "Allowlist aktiv: ${config.allowlistTables.size} Tabelle(n) als 'absichtlich public' markiert" }
+        }
 
         for ((index, table) in tables.withIndex()) {
             val probeStart = Instant.now()
@@ -145,13 +149,26 @@ class AnonReadExposureCheck @JvmOverloads constructor(
                 r.statusCode == 200 -> {
                     val rowCount = countRows(r.body)
                     val isSensitive = isSensitiveName(table)
+                    val isAllowlisted = config.isTableAllowlisted(table)
                     when {
+                        rowCount > 0 && isAllowlisted -> {
+                            findings += Finding(
+                                CheckStatus.ACCEPTED,
+                                "Tabelle '$table' liefert anonym Daten (Allowlist-Ausnahme)",
+                                "GET /rest/v1/$table?limit=1 → HTTP 200 mit $rowCount Zeile(n). Tabelle ist " +
+                                    "via allowlist.tables als bewusst-public markiert — kein Befund, aber " +
+                                    "in Berichten sichtbar, damit die Ausnahme nicht in Vergessenheit gerät.",
+                                evidence = r.body.take(400),
+                            )
+                            acceptedCount++
+                        }
                         rowCount > 0 && isSensitive -> {
                             findings += Finding(
                                 CheckStatus.RED,
                                 "Sensible Tabelle '$table' liefert anonym Daten",
                                 "GET /rest/v1/$table?limit=1 → HTTP 200 mit $rowCount Zeile(n). " +
-                                    "Der Tabellenname klingt sensibel — RLS-Policies dringend prüfen.",
+                                    "Der Tabellenname klingt sensibel — RLS-Policies dringend prüfen. " +
+                                    "Falls bewusst öffentlich, in allowlist.tables eintragen.",
                                 evidence = r.body.take(400),
                             )
                             redCount++
@@ -161,7 +178,9 @@ class AnonReadExposureCheck @JvmOverloads constructor(
                                 CheckStatus.YELLOW,
                                 "Tabelle '$table' liefert anonym Daten",
                                 "GET /rest/v1/$table?limit=1 → HTTP 200 mit $rowCount Zeile(n). " +
-                                    "Falls bewusst öffentlich (z. B. CMS-Inhalte), ist alles in Ordnung — sonst RLS schärfen.",
+                                    "Falls bewusst öffentlich (z. B. CMS-Inhalte), '$table' in " +
+                                    "allowlist.tables eintragen — dann wird's als Ausnahme dokumentiert " +
+                                    "statt als Warnung gemeldet. Sonst RLS schärfen.",
                                 evidence = r.body.take(400),
                             )
                             yellowCount++
@@ -197,7 +216,8 @@ class AnonReadExposureCheck @JvmOverloads constructor(
         }
 
         val status = CheckStatus.worstOf(findings.map { it.severity })
-        val summary = "${tables.size} Tabelle(n) geprüft: $greenCount blockiert/leer, $yellowCount Warnung(en), $redCount kritisch."
+        val summary = "${tables.size} Tabelle(n) geprüft: $greenCount blockiert/leer, " +
+            "$acceptedCount akzeptierte Ausnahme(n), $yellowCount Warnung(en), $redCount kritisch."
         return CheckResult(
             checkId = id, checkName = name, checkDescription = description, category = category,
             status = status,

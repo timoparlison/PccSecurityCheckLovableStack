@@ -77,17 +77,32 @@ class PublicStorageBucketsCheck @JvmOverloads constructor(
 
         val findings = mutableListOf<Finding>()
         var publicCount = 0
+        var acceptedCount = 0
         for (b in buckets) {
             val obj = (b as? JsonObject) ?: continue
             val name = obj["name"]?.jsonPrimitive?.content ?: "?"
             val isPublic = obj["public"]?.jsonPrimitive?.booleanOrNull ?: false
             val isSensitiveName = sensitivePatterns.any { name.lowercase().contains(it) }
+            val isAllowlisted = config.isBucketAllowlisted(name)
             when {
+                isPublic && isAllowlisted -> {
+                    findings += Finding(
+                        CheckStatus.ACCEPTED,
+                        "Bucket '$name': PUBLIC (Allowlist-Ausnahme)",
+                        "Bucket ist public und via allowlist.buckets als bewusst-öffentlich markiert " +
+                            "(typisch: Avatare, Logos, statische Assets). Kein Befund, aber im Bericht " +
+                            "sichtbar, damit die Ausnahme dokumentiert bleibt.",
+                    )
+                    acceptedCount++
+                    publicCount++
+                }
                 isPublic && isSensitiveName -> {
                     findings += Finding(
                         CheckStatus.RED,
                         "Bucket '$name': PUBLIC mit sensitivem Namen",
-                        "Der Bucket ist public lesbar (read-all). Name suggeriert nicht-öffentliche Inhalte — Auflistbarkeit aller Files plus direkter Download möglich.",
+                        "Der Bucket ist public lesbar (read-all). Name suggeriert nicht-öffentliche " +
+                            "Inhalte — Auflistbarkeit aller Files plus direkter Download möglich. Falls " +
+                            "bewusst öffentlich, in allowlist.buckets eintragen.",
                     )
                     publicCount++
                 }
@@ -95,7 +110,9 @@ class PublicStorageBucketsCheck @JvmOverloads constructor(
                     findings += Finding(
                         CheckStatus.YELLOW,
                         "Bucket '$name': PUBLIC",
-                        "Jeder kennt-die-URL kann Dateien lesen. Bei Avatar-/Logo-Buckets in Ordnung, bei allem anderen prüfen.",
+                        "Jeder kennt-die-URL kann Dateien lesen. Bei Avatar-/Logo-Buckets in Ordnung — " +
+                            "dann in allowlist.buckets eintragen, damit die Meldung künftig als Ausnahme " +
+                            "statt Warnung erscheint.",
                     )
                     publicCount++
                 }
@@ -108,7 +125,8 @@ class PublicStorageBucketsCheck @JvmOverloads constructor(
                 }
             }
         }
-        val summary = "${buckets.size} Bucket(s): $publicCount public, ${buckets.size - publicCount} privat."
+        val summary = "${buckets.size} Bucket(s): $publicCount public " +
+            "(davon $acceptedCount via Allowlist), ${buckets.size - publicCount} privat."
         return resultOf(findings, summary, start)
     }
 }
