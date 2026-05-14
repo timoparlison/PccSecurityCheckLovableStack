@@ -7,12 +7,15 @@ import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
 import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.http.SupabaseHttpClient
+import io.github.oshai.kotlinlogging.KotlinLogging
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.time.Duration
 import java.time.Instant
+
+private val log = KotlinLogging.logger {}
 
 @CheckId(name = "anon-read-exposure")
 class AnonReadExposureCheck @JvmOverloads constructor(
@@ -41,6 +44,7 @@ class AnonReadExposureCheck @JvmOverloads constructor(
 
         // Discovery via SERVICE-ROLE: der Anon-Key kriegt die OpenAPI-Spec auf /rest/v1/
         // bei Supabase-Standard-Härtung meistens nicht. Service-Role umgeht das.
+        log.info { "Discovery: lade OpenAPI-Spec von ${config.baseUrl}/rest/v1/ (Service-Role)" }
         val specResult = runCatching { httpClient.getWithKey("/rest/v1/", config.serviceRoleKey) }
         if (specResult.isFailure) {
             val ex = specResult.exceptionOrNull()
@@ -94,10 +98,16 @@ class AnonReadExposureCheck @JvmOverloads constructor(
         var yellowCount = 0
         var greenCount = 0
 
-        for (table in tables) {
+        log.info { "Discovery fertig: ${tables.size} Tabelle(n) gefunden — starte anonymous probing" }
+
+        for ((index, table) in tables.withIndex()) {
+            val probeStart = Instant.now()
+            log.info { "  [${index + 1}/${tables.size}] probe '$table'" }
             val probe = runCatching { httpClient.getWithKey("/rest/v1/$table?limit=1", config.anonKey) }
             val r = probe.getOrNull()
             if (r == null) {
+                val ms = Duration.between(probeStart, Instant.now()).toMillis()
+                log.info { "  [${index + 1}/${tables.size}] probe '$table' → Exception nach ${ms}ms: ${probe.exceptionOrNull()?.message}" }
                 findings += Finding(
                     CheckStatus.YELLOW,
                     "Tabelle '$table': Probe fehlgeschlagen",
@@ -106,6 +116,8 @@ class AnonReadExposureCheck @JvmOverloads constructor(
                 yellowCount++
                 continue
             }
+            val ms = Duration.between(probeStart, Instant.now()).toMillis()
+            log.info { "  [${index + 1}/${tables.size}] probe '$table' → HTTP ${r.statusCode} (${ms}ms)" }
             when {
                 r.statusCode == 200 -> {
                     val rowCount = countRows(r.body)
