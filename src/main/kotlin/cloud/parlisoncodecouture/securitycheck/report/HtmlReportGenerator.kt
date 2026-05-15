@@ -99,7 +99,12 @@ class HtmlReportGenerator(
                             CheckStatus.ERROR,
                             CheckStatus.SKIPPED,
                         ).forEach { st ->
-                            val n = results.count { it.status == st }
+                            // Zähle Checks, die *irgendwo* diesen Status enthalten — als Gesamt-Status
+                            // oder in einem einzelnen Finding. So zählt z. B. ACCEPTED auch dann,
+                            // wenn der Check insgesamt GREEN ist, aber einzelne Allowlist-Treffer enthält.
+                            val n = results.count { result ->
+                                result.status == st || result.findings.any { it.severity == st }
+                            }
                             span("badge filter-badge") {
                                 attributes["style"] = "background:${st.color}"
                                 attributes["data-status"] = st.name
@@ -142,8 +147,12 @@ class HtmlReportGenerator(
               else { b.classList.add('inactive'); }
             });
             checks.forEach(function(c) {
-              var s = c.getAttribute('data-status');
-              if (!anyActive || active[s]) { c.classList.remove('hidden'); }
+              var sevs = (c.getAttribute('data-severities') || c.getAttribute('data-status') || '').split(',');
+              var match = false;
+              for (var k in active) {
+                if (active[k] && sevs.indexOf(k) !== -1) { match = true; break; }
+              }
+              if (!anyActive || match) { c.classList.remove('hidden'); }
               else { c.classList.add('hidden'); }
             });
             if (resetBtn) { if (anyActive) resetBtn.classList.add('visible'); else resetBtn.classList.remove('visible'); }
@@ -164,6 +173,14 @@ class HtmlReportGenerator(
     private fun FlowContent.renderCheck(result: CheckResult) {
         article("card check") {
             attributes["data-status"] = result.status.name
+            // Komma-separierte Liste aller in diesem Check vorkommenden Severities (Aggregat + Findings).
+            // Wird vom Filter-Skript gelesen, damit z. B. ein GREEN-Check mit ACCEPTED-Findings beim
+            // ACCEPTED-Filter sichtbar bleibt.
+            val severities = (listOf(result.status) + result.findings.map { it.severity })
+                .map { it.name }
+                .distinct()
+                .joinToString(",")
+            attributes["data-severities"] = severities
             div("check-header") {
                 span("status-dot") { attributes["style"] = "background:${result.status.color}" }
                 div("check-title-block") {
