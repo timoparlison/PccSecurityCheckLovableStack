@@ -29,8 +29,10 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
             "via OPTIONS-Preflight und realem GET. Bewertet: " +
             "(1) CORS-Reflektion + Allow-Credentials (klassisches BSI/OWASP-A05-Pattern), " +
             "(2) Defense-in-Depth-Header: Strict-Transport-Security, X-Content-Type-Options, " +
-            "Referrer-Policy. Supabase nutzt Bearer-Tokens statt Cookies, daher ist CORS-Reflektion " +
-            "ohne Credentials eher Warnung — mit Credentials aber kritisch."
+            "Referrer-Policy. Reflektion auf den hosted Supabase-Auth-Endpoints wird als Warnung " +
+            "klassifiziert (Bearer-Token im JS-Memory, keine Auth-Cookies → praktisch nicht " +
+            "ausnutzbar, und vom Kunden nicht konfigurierbar). Die CORS-Spec-Verletzung " +
+            "Allow-Origin '*' + Allow-Credentials 'true' bleibt kritisch."
     override val category = "Supabase / HTTP-Hardening"
 
     private val javaClient = HttpClient.newBuilder()
@@ -38,11 +40,11 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
         .followRedirects(HttpClient.Redirect.NEVER)
         .build()
 
-    private data class Probe(val label: String, val path: String)
+    private data class Probe(val label: String, val path: String, val bearerTokenOnly: Boolean)
     private val probes = listOf(
-        Probe("REST root", "/rest/v1/"),
-        Probe("Auth settings", "/auth/v1/settings"),
-        Probe("Auth health", "/auth/v1/health"),
+        Probe("REST root", "/rest/v1/", bearerTokenOnly = true),
+        Probe("Auth settings", "/auth/v1/settings", bearerTokenOnly = true),
+        Probe("Auth health", "/auth/v1/health", bearerTokenOnly = true),
     )
 
     private val evilOrigin = "https://evil.example.com"
@@ -56,7 +58,7 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
 
             val preflight = runCatching { sendOptions(probe.path) }.getOrNull()
             if (preflight != null) {
-                checkCors("${probe.label} [OPTIONS]", preflight.headers().map(), findings)
+                checkCors("${probe.label} [OPTIONS]", preflight.headers().map(), probe, findings)
             }
 
             val getResp = runCatching { sendGetWithOrigin(probe.path) }.getOrNull()
@@ -69,7 +71,7 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
                 continue
             }
             val getHeaders = getResp.headers().map()
-            checkCors("${probe.label} [GET]", getHeaders, findings)
+            checkCors("${probe.label} [GET]", getHeaders, probe, findings)
             checkSecurityHeaders(probe.label, getHeaders, findings)
         }
 
@@ -115,7 +117,12 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
     private fun headerCi(headers: Map<String, List<String>>, name: String): String? =
         headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value?.firstOrNull()
 
-    private fun checkCors(label: String, headers: Map<String, List<String>>, findings: MutableList<Finding>) {
+    private fun checkCors(
+        label: String,
+        headers: Map<String, List<String>>,
+        probe: Probe,
+        findings: MutableList<Finding>,
+    ) {
         val acao = headerCi(headers, "Access-Control-Allow-Origin")
         val acac = headerCi(headers, "Access-Control-Allow-Credentials")?.lowercase()
 
@@ -125,6 +132,18 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
                 "$label: Allow-Origin '*' + Allow-Credentials 'true'",
                 "Diese Kombination ist von CORS-Spec verboten, wird aber von älteren Browsern teils akzeptiert. " +
                     "Resultat: jede fremde Origin könnte mit Credentials auf den Endpoint zugreifen.",
+            )
+            acao == evilOrigin && acac == "true" && probe.bearerTokenOnly -> findings += Finding(
+                CheckStatus.YELLOW,
+                "$label: reflektiert Origin + Allow-Credentials 'true' (Bearer-Token-Kontext)",
+                "Allow-Origin spiegelt die gesendete Origin ($evilOrigin) zurück UND erlaubt Credentials. " +
+                    "Klassisch wäre das kritisch, hier aber Warnung: Supabase nutzt Bearer-Tokens im JS-Memory " +
+                    "(localStorage), keine Auth-Cookies auf *.supabase.co — der Browser hat daher cross-origin " +
+                    "keine automatisch mitsendbaren Credentials. Hinweis: Die Header werden serverseitig von " +
+                    "hosted GoTrue gesetzt und sind vom Kunden nicht konfigurierbar (Remediation nur via " +
+                    "Supabase-Support oder Reverse-Proxy). Falls dein Frontend Supabase-Sessions in Cookies " +
+                    "ablegt oder ein Edge-Function-Endpoint auf derselben Domain Cookies nutzt, wird daraus " +
+                    "wieder kritisch — dann erneut bewerten.",
             )
             acao == evilOrigin && acac == "true" -> findings += Finding(
                 CheckStatus.RED,
