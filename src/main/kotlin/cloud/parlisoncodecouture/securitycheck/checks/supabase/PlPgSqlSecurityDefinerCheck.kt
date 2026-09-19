@@ -120,10 +120,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                     }
                 }
 
-                val callsAuthOrRoleCheck = Regex(
-                    """auth\.uid\(\)|auth\.jwt\(\)|current_setting\(\s*'request\.jwt|has_role\(""",
-                    RegexOption.IGNORE_CASE,
-                ).containsMatchIn(body)
+                val callsAuthOrRoleCheck = PlPgSqlHeuristics.hasAuthOrRoleCheck(body)
                 if (!callsAuthOrRoleCheck) {
                     findingsForFn += Finding(
                         CheckStatus.YELLOW,
@@ -134,10 +131,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                     )
                 }
 
-                val unsafeExecute = Regex(
-                    """\bEXECUTE\s+format\s*\([^)]*%[ILs][^)]*\)(?![^;]*USING\b)""",
-                    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-                ).containsMatchIn(body)
+                val unsafeExecute = PlPgSqlHeuristics.hasUnsafeFormatExecute(body)
                 if (unsafeExecute) {
                     findingsForFn += Finding(
                         CheckStatus.RED,
@@ -148,10 +142,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                     )
                 }
 
-                val executeWithLiteral = Regex(
-                    """\bEXECUTE\s+['"]?[^;]*\|\|""",
-                    RegexOption.IGNORE_CASE,
-                ).containsMatchIn(body)
+                val executeWithLiteral = PlPgSqlHeuristics.hasConcatExecute(body)
                 if (executeWithLiteral) {
                     findingsForFn += Finding(
                         CheckStatus.RED,

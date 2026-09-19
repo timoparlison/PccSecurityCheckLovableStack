@@ -1,6 +1,6 @@
 # Sicherheitschecks im Überblick
 
-Dieses Dokument beschreibt **alle 14 Prüfungen** (`Checks`), die das Tool `PccSecurityCheckLovableStack` durchführt.
+Dieses Dokument beschreibt **alle 15 Prüfungen** (`Checks`), die das Tool `PccSecurityCheckLovableStack` durchführt.
 
 Die Beschreibungen sind so formuliert, dass auch **Nicht-ITler** verstehen, welches Risiko geprüft wird, wie der Test arbeitet und wie zuverlässig das Ergebnis ist.
 
@@ -133,29 +133,34 @@ Dies ist ein echter Angriffstest (Penetration-Testing-Pattern). Er prüft nicht 
 
 ## 3. Datenzugriffsschutz (RLS)
 
-### `rls-status` — RLS-Status pro Tabelle
+### `rls-status` — RLS-Status & API-Rechte pro Relation
 
 **Was wird geprüft?**
-Für jede Tabelle im öffentlichen Bereich der Datenbank (`public`-Schema): Ist der Zeilen-basierte Schutz (Row-Level Security, RLS) aktiviert, und wie viele Zugriffsregeln (Policies) existieren?
+Für jede Tabelle, View, Materialized View und Foreign Table im öffentlichen Bereich der Datenbank (`public`-Schema): Ist der Zeilen-basierte Schutz (Row-Level Security, RLS) aktiviert, wie viele Zugriffsregeln (Policies) gibt es — und welche Rechte haben anonyme (`anon`) und eingeloggte (`authenticated`) Nutzer **tatsächlich**?
 
 **Warum ist das wichtig?**
-RLS ist das Herzstück der Datensicherheit in Supabase. Ohne RLS können eingeloggte oder anonyme Nutzer — je nach Datenbank-Grundrechten — potenziell alle Daten aller Nutzer sehen und verändern.
+RLS ist das Herzstück der Datensicherheit in Supabase. Ohne RLS können eingeloggte oder anonyme Nutzer — je nach Datenbank-Grundrechten — alle Daten aller Nutzer sehen und verändern. Zwei Fallen werden dabei oft übersehen:
+- **Views** laufen standardmäßig mit den Rechten ihres Erstellers und **umgehen damit RLS** der Tabellen dahinter — außer sie sind mit `security_invoker = true` angelegt.
+- **Materialized Views und Foreign Tables** können gar kein RLS haben. Sind sie für `anon` lesbar, liegen die Daten offen.
 
 **Wie funktioniert der Test?**
 - Verbindet sich direkt (nur lesend, verschlüsselt) zur Postgres-Datenbank über JDBC.
-- Liest aus dem Systemkatalog (`pg_class`, `pg_namespace`): für jede Tabelle, ob `relrowsecurity = true` (RLS an) und wie viele Policies existieren.
-- Bewertung:
-  - **Rot:** RLS ist ausgeschaltet.
-  - **Gelb:** RLS ist an, aber es gibt 0 Policies (Tabelle ist komplett gesperrt — oft ein Konfigurationsfehler).
-  - **Grün:** RLS ist an und es gibt mindestens eine Policy.
+- Liest aus dem Systemkatalog (`pg_class`, `pg_policy`) RLS-Status, Policy-Anzahl und View-Optionen und fragt per `has_table_privilege`/`has_any_column_privilege` die effektiven Rechte von `anon` und `authenticated` ab.
+- Bewertung Tabellen:
+  - **Rot:** RLS aus und `anon`/`authenticated` haben Rechte.
+  - **Gelb:** RLS aus, aber derzeit keine Rechte (ein späteres GRANT würde die Tabelle sofort öffnen) — oder RLS an, aber 0 Policies (Tabelle komplett gesperrt).
+  - **Grün:** RLS an mit mindestens einer Policy.
+- Bewertung Views: **Rot**, wenn ohne `security_invoker` für `anon` lesbar; **Gelb**, wenn nur für `authenticated`; **Grün** mit `security_invoker` oder ohne Rechte.
+- Bewertung Materialized Views / Foreign Tables: **Rot** bei Rechten für `anon`, **Gelb** bei Rechten nur für `authenticated`, sonst **Grün**.
 
 **Güte: ⭐⭐⭐⭐⭐ Exzellent**
 
-Dieser Test liest die Wahrheit direkt aus der Datenbank. Es gibt keinen Weg, ihm etwas vorzumachen. Er ist deterministisch und vollständig.
+Dieser Test liest die Wahrheit direkt aus der Datenbank. Durch die Rechte-Abfrage unterscheidet er zwischen „theoretisch ungeschützt“ und „tatsächlich über die API erreichbar“.
 
 **Bekannte Grenzen**
-- Er prüft nur das `public`-Schema. Tabellen in anderen Schemas (z. B. `auth`, `storage`) werden nicht betrachtet (für `storage.objects` gibt es jedoch den separaten `storage-objects-rls`-Check).
-- Er sagt nicht, ob die Policies *gut* sind — nur ob sie existieren. Die Qualität der Regeln prüft der `permissive-policies`-Test.
+- Er prüft nur das `public`-Schema. Tabellen in anderen Schemas (z. B. `auth`, `storage`) werden nicht betrachtet (für `storage.objects` gibt es den separaten `storage-objects-rls`-Check).
+- Er sagt nicht, ob die Policies *gut* sind — nur ob sie existieren. Die Qualität der Regeln prüft `permissive-policies`.
+- Bei Views ohne `security_invoker` bewertet er nicht, *welche* Daten die View zeigt — auch eine harmlose View wird gemeldet.
 
 ---
 
@@ -323,7 +328,7 @@ Dieser Test ist besonders wertvoll, weil er **tatsächliches Probing** statt nur
 
 ---
 
-## 6. Datenbank-Funktionen (Migrations-Analyse)
+## 6. Datenbank-Funktionen
 
 ### `plpgsql-secdef-audit` — PL/pgSQL SECURITY DEFINER Audit
 
@@ -378,6 +383,36 @@ Der Test ergänzt den DEFINER-Audit sinnvoll und deckt systemische Risiken ab. D
 
 ---
 
+### `db-function-exposure` — DB-Functions: Live-Aufrufbarkeit (RPC)
+
+**Was wird geprüft?**
+Welche Datenbank-Funktionen im `public`-Schema über die API (`POST /rest/v1/rpc/<name>`) **tatsächlich** aufrufbar sind — und ob Funktionen mit erweiterten Rechten (`SECURITY DEFINER`) dabei sicher gebaut sind.
+
+**Warum ist das wichtig?**
+Jede Funktion im `public`-Schema ist per API erreichbar. Postgres vergibt das Ausführungsrecht standardmäßig an **alle** — wer nicht aktiv `REVOKE` macht, hat die Funktion offen. Eine `SECURITY DEFINER`-Funktion läuft mit Admin-Rechten und umgeht RLS. Ist sie für anonyme Besucher aufrufbar und prüft nicht, wer sie aufruft, kann jeder mit dem öffentlichen Anon-Key Daten lesen oder verändern.
+
+**Wie funktioniert der Test?**
+- Liest alle Funktionen live aus dem Systemkatalog (`pg_proc`) — nur lesend, die Funktionen werden **nicht** aufgerufen. Trigger-Funktionen und Funktionen von Extensions werden ausgelassen.
+- Ermittelt per `has_function_privilege`, ob `anon` und/oder `authenticated` die Funktion ausführen dürfen (berücksichtigt GRANTs, Default-Privileges und den PUBLIC-Default).
+- Prüft `SECURITY DEFINER`-Funktionen auf dem **aktuellen** Quelltext (`pg_get_functiondef`) mit denselben Regeln wie `plpgsql-secdef-audit`:
+  - **Rot:** für `anon` aufrufbar ohne erkennbaren Auth-Check; oder aufrufbar und ohne festen `search_path`; oder aufrufbar mit unsicherem dynamischem SQL.
+  - **Gelb:** nur für `authenticated` aufrufbar ohne Auth-Check; für `anon` offen trotz Auth-Check; nicht aufrufbar, aber ohne festen `search_path`.
+  - **Grün:** sauber oder nur für `service_role` aufrufbar.
+- Jeder Befund enthält einen konkreten Fix (`REVOKE … FROM PUBLIC, anon`, `ALTER FUNCTION … SET search_path`).
+- Ist `migrations.path` gesetzt, wird die Fundstelle in den Migrationen verlinkt. Fehlt sie, wird darauf hingewiesen, dass die Funktion vermutlich am Repo vorbei angelegt wurde.
+- `SECURITY INVOKER`-Funktionen, die für `anon` aufrufbar sind, werden als Info-Liste ausgegeben (RLS greift, aber sie gehören zur öffentlichen Angriffsfläche).
+
+**Güte: ⭐⭐⭐⭐⭐ Exzellent** (Rechte und Konfiguration) / ⭐⭐⭐ (Quelltext-Heuristik)
+
+Aufrufbarkeit und `search_path` werden deterministisch aus dem Katalog gelesen. Der Auth-Check und die Injection-Erkennung bleiben eine Heuristik auf dem Quelltext.
+
+**Bekannte Grenzen**
+- Auth-Checks über eigene Hilfsfunktionen (z. B. `is_org_member()`) werden nicht erkannt → möglicher Fehlalarm.
+- Die Zuordnung zur Migration erfolgt über den Funktionsnamen; bei Überladungen wird die zuletzt angelegte Stelle verlinkt.
+- Nur das `public`-Schema (das Standard-API-Schema von Supabase).
+
+---
+
 ## 7. Edge Functions (Server-Code)
 
 ### `edge-fn-audit` — Edge-Function Audit
@@ -417,7 +452,7 @@ Der Test ist eine **Heuristik** — er „versteht" den Code nicht, sondern such
 | 2 | `auth-settings` | Auth | Registrierung, Auto-Confirm, OAuth | ⭐⭐⭐⭐ |
 | 3 | `auth-user-enumeration` | Auth | Leakt die API Existenz-Infos von E-Mails? | ⭐⭐⭐⭐⭐ |
 | 4 | `jwt-hardening` | Auth | Werden unsignierte/schwache JWT akzeptiert? | ⭐⭐⭐⭐⭐ |
-| 5 | `rls-status` | RLS | Ist RLS an/aus pro Tabelle? | ⭐⭐⭐⭐⭐ |
+| 5 | `rls-status` | RLS | RLS an/aus, API-Rechte, Views ohne security_invoker | ⭐⭐⭐⭐⭐ |
 | 6 | `permissive-policies` | RLS | Sind Policies zu nachsichtig (true)? | ⭐⭐⭐⭐⭐ |
 | 7 | `storage-objects-rls` | Storage | RLS-Policies auf `storage.objects` | ⭐⭐⭐⭐⭐ |
 | 8 | `public-storage-buckets` | Storage | Sind Buckets public + sensible Namen? | ⭐⭐⭐⭐ |
@@ -426,7 +461,8 @@ Der Test ist eine **Heuristik** — er „versteht" den Code nicht, sondern such
 | 11 | `anon-read-exposure` | API-Surface | Liest der Anon-Key wirklich Tabellen? | ⭐⭐⭐⭐ |
 | 12 | `plpgsql-secdef-audit` | DB Functions | Sicherheit von DEFINER-Funktionen | ⭐⭐⭐⭐ |
 | 13 | `pg-search-path-hardening` | DB Functions | search_path bei INVOKER + Rollen/DB | ⭐⭐⭐⭐ |
-| 14 | `edge-fn-audit` | Edge Functions | CORS, SQLi, Auth, Secrets, Validation | ⭐⭐⭐ |
+| 14 | `db-function-exposure` | DB Functions | Welche Functions sind live per RPC aufrufbar? | ⭐⭐⭐⭐⭐ |
+| 15 | `edge-fn-audit` | Edge Functions | CORS, SQLi, Auth, Secrets, Validation | ⭐⭐⭐ |
 
 ---
 
