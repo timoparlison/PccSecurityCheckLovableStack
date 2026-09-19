@@ -5,4 +5,5 @@ data class Finding(
     val title: String,
     val detail: String,
     val evidence: String? = null,
+    val codeLocation: CodeLocation? = null,
 )

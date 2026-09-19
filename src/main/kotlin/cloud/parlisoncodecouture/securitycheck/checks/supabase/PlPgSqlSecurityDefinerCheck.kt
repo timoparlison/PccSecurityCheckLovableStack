@@ -4,6 +4,7 @@ import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
 import cloud.parlisoncodecouture.securitycheck.core.CheckId
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
+import cloud.parlisoncodecouture.securitycheck.core.CodeLocation
 import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
@@ -83,7 +84,8 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                 if (!isSecdef) continue
                 secdefFunctions++
 
-                val location = relativeLocation(migrations, file, content, match.range.first)
+                val codeLoc = codeLocationOf(migrations, file, content, match.range.first, match.range.last)
+                val location = "${codeLoc.displayPath}:${codeLoc.startLine}"
                 val findingsForFn = mutableListOf<Finding>()
 
                 val hasSearchPath = Regex("""\bSET\s+search_path\b""", RegexOption.IGNORE_CASE)
@@ -104,6 +106,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                                 "gesetzt durch eine spätere ALTER FUNCTION-Migration. Achtung: ein zukünftiges " +
                                 "'CREATE OR REPLACE FUNCTION' ohne inline-SET würde PROCONFIG zurücksetzen — " +
                                 "sicherzustellen, dass die Härtung mitwandert (inline-Klausel oder Backstop-Migration).",
+                            codeLocation = codeLoc,
                         )
                     } else {
                         findingsForFn += Finding(
@@ -112,6 +115,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                             "$location — ohne explicit 'SET search_path = …' kann ein Angreifer mit CREATE-Rechten in einem " +
                                 "anderen Schema (z. B. pg_temp) Objekte unter denselben Namen anlegen und so beliebigen Code " +
                                 "im Owner-Kontext ausführen (search_path-Hijack).",
+                            codeLocation = codeLoc,
                         )
                     }
                 }
@@ -126,6 +130,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                         "SECDEF '$functionName' ohne erkennbaren auth/role-Check",
                         "$location — Function bypasst RLS (DEFINER). Ohne expliziten auth.uid()-/role-Check " +
                             "kann jeder authentifizierte User die Function mit beliebigen Parametern aufrufen.",
+                        codeLocation = codeLoc,
                     )
                 }
 
@@ -139,6 +144,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                         "SECDEF '$functionName' verwendet format()-EXECUTE ohne USING",
                         "$location — Dynamisches SQL via EXECUTE format(…) ohne nachfolgendes USING bedeutet, dass " +
                             "Werte über String-Konkatenation eingebaut werden. Klassischer SQL-Injection-Vektor.",
+                        codeLocation = codeLoc,
                     )
                 }
 
@@ -151,6 +157,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                         CheckStatus.RED,
                         "SECDEF '$functionName' baut EXECUTE per || zusammen",
                         "$location — String-Konkatenation in EXECUTE ist SQL-Injection-anfällig. Stattdessen EXECUTE … USING \$1 nutzen.",
+                        codeLocation = codeLoc,
                     )
                 }
 
@@ -159,6 +166,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                         CheckStatus.GREEN,
                         "SECDEF '$functionName' wirkt strukturell sauber",
                         "$location — search_path gesetzt, auth-Check vorhanden, keine offensichtliche Injection.",
+                        codeLocation = codeLoc,
                     )
                 } else {
                     findings += findingsForFn
@@ -196,10 +204,11 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
         return resultOf(findings, summary, start)
     }
 
-    private fun relativeLocation(root: Path, file: Path, content: String, charOffset: Int): String {
+    private fun codeLocationOf(root: Path, file: Path, content: String, startOffset: Int, endOffset: Int): CodeLocation {
         val rel = root.relativize(file).toString()
-        val line = content.substring(0, charOffset.coerceAtMost(content.length)).count { it == '\n' } + 1
-        return "$rel:$line"
+        val startLine = content.substring(0, startOffset.coerceAtMost(content.length)).count { it == '\n' } + 1
+        val endLine = content.substring(0, endOffset.coerceAtMost(content.length)).count { it == '\n' } + 1
+        return CodeLocation(file = file, displayPath = rel, startLine = startLine, endLine = endLine)
     }
 
     companion object {

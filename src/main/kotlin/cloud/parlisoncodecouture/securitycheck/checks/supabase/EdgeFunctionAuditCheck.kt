@@ -4,6 +4,7 @@ import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
 import cloud.parlisoncodecouture.securitycheck.core.CheckId
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
+import cloud.parlisoncodecouture.securitycheck.core.CodeLocation
 import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
@@ -51,7 +52,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
         for (file in tsFiles) {
             val raw = runCatching { file.readText() }.getOrNull() ?: continue
             val rel = root.relativize(file).toString()
-            scanFile(rel, raw, findings)
+            scanFile(file, rel, raw, findings)
         }
 
         // Zusammenfassende GREENs für Functions ohne Findings — pragmatisch: nur pro File einen, falls nichts gefunden
@@ -71,7 +72,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
         return resultOf(findings, summary, start)
     }
 
-    private fun scanFile(rel: String, raw: String, findings: MutableList<Finding>) {
+    private fun scanFile(file: Path, rel: String, raw: String, findings: MutableList<Finding>) {
         val src = stripBlockComments(raw)
 
         // ---- CORS ----
@@ -88,6 +89,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                         "Misconfig. Bei Production-Frontends mit Cookies/Authorization-Headern müssen erlaubte Origins " +
                         "explizit aufgelistet sein.",
                     evidence = lineAround(raw, corsWildcardHit.range.first),
+                    codeLocation = locationOf(file, rel, raw, corsWildcardHit.range.first),
                 )
             } else {
                 findings += Finding(
@@ -96,6 +98,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                     "Access-Control-Allow-Origin: * erlaubt Cross-Origin-Reads von beliebigen Seiten. Bei rein " +
                         "öffentlichen Functions ggf. OK; bei allem mit Authorization-Header → explizite Origin-Whitelist.",
                     evidence = lineAround(raw, corsWildcardHit.range.first),
+                    codeLocation = locationOf(file, rel, raw, corsWildcardHit.range.first),
                 )
             }
         }
@@ -110,6 +113,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                     "PostgREST-RPC selbst ist zwar parametrisiert, aber dieser Pattern ist typisch für " +
                     "dynamische Function-Wahl oder SQL-Konstruktion und sehr fehleranfällig.",
                 evidence = lineAround(raw, m.range.first),
+                codeLocation = locationOf(file, rel, raw, m.range.first),
             )
         }
 
@@ -122,14 +126,17 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                 "Direkte String-Interpolation in einem Postgres-Query ist klassische SQL-Injection. " +
                     "Stattdessen parametrisierte Calls (\$1, \$2 …) nutzen.",
                 evidence = lineAround(raw, m.range.first),
+                codeLocation = locationOf(file, rel, raw, m.range.first),
             )
         }
 
         // ---- Service-Role-Client ohne Auth-Check vor Writes ----
-        val hasServiceRoleClient = Regex(
+        val serviceRoleRegex = Regex(
             """createClient\([^)]*SUPABASE_SERVICE_ROLE_KEY""",
             RegexOption.DOT_MATCHES_ALL,
-        ).containsMatchIn(src)
+        )
+        val serviceRoleHit = serviceRoleRegex.find(src)
+        val hasServiceRoleClient = serviceRoleHit != null
         val hasAuthCheck = Regex(
             """auth\.getUser\(|verifyJWT\(|jwt\.verify\(""",
             RegexOption.IGNORE_CASE,
@@ -146,6 +153,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                 "Die Function nutzt SUPABASE_SERVICE_ROLE_KEY (umgeht RLS) und macht Inserts/Updates/Deletes, " +
                     "ohne dass davor auth.getUser()/JWT-Verify im Code zu sehen ist. Jeder, der die Function-URL " +
                     "kennt, kann beliebige DB-Writes triggern.",
+                codeLocation = serviceRoleHit?.let { locationOf(file, rel, raw, it.range.first) },
             )
         } else if (hasServiceRoleClient && !hasAuthCheck) {
             findings += Finding(
@@ -153,6 +161,7 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                 "$rel: Service-Role-Client ohne erkennbaren Auth-Check",
                 "Die Function nutzt SUPABASE_SERVICE_ROLE_KEY ohne sichtbare Authentication. Bei reinen Reads " +
                     "ggf. OK (z. B. öffentliche Aggregationen), sonst Auth nachrüsten.",
+                codeLocation = serviceRoleHit?.let { locationOf(file, rel, raw, it.range.first) },
             )
         }
 
@@ -168,31 +177,44 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                 "Ein console.log-Call enthält ein Schlüsselwort, das auf das Loggen sensibler Daten hindeutet. " +
                     "Edge-Function-Logs sind in Supabase einsehbar — Secrets dort sind ein Leck.",
                 evidence = lineAround(raw, m.range.first),
+                codeLocation = locationOf(file, rel, raw, m.range.first),
             )
         }
 
         // ---- Input validation ----
-        val hasReqJson = Regex("""req\.json\(\)|request\.json\(\)""").containsMatchIn(src)
+        val reqJsonRegex = Regex("""req\.json\(\)|request\.json\(\)""")
+        val reqJsonHit = reqJsonRegex.find(src)
         val hasSchemaValidator = Regex(
             """from\s+['"]https?://[^'"]+/zod|from\s+['"]zod['"]|from\s+['"]yup['"]|from\s+['"]joi['"]|from\s+['"]valibot['"]""",
             RegexOption.IGNORE_CASE,
         ).containsMatchIn(src)
-        if (hasReqJson && !hasSchemaValidator) {
+        if (reqJsonHit != null && !hasSchemaValidator) {
             findings += Finding(
                 CheckStatus.YELLOW,
                 "$rel: req.json() ohne Schema-Validator",
                 "Der Function-Body wird per JSON.parse übernommen, ohne dass ein Validator (zod/yup/joi/valibot) " +
                     "importiert wird. Eingaben sind type-mäßig 'any' — leichte Quelle für Type-Confusion / unerwartete Felder.",
+                codeLocation = locationOf(file, rel, raw, reqJsonHit.range.first),
             )
         }
     }
 
+    private fun locationOf(file: Path, displayPath: String, raw: String, charOffset: Int): CodeLocation {
+        val safe = charOffset.coerceIn(0, (raw.length - 1).coerceAtLeast(0))
+        val line = raw.substring(0, safe).count { it == '\n' } + 1
+        return CodeLocation(file = file, displayPath = displayPath, startLine = line, endLine = line)
+    }
+
+    // Kommentare werden durch Leerzeichen ersetzt (Zeilenumbrüche bleiben), damit Match-Offsets in `src`
+    // 1:1 auf `raw` passen — sonst zeigen Evidence/Zeilennummern auf falsche Stellen.
     private fun stripBlockComments(src: String): String =
-        Regex("/\\*[\\s\\S]*?\\*/").replace(src, "")
+        Regex("/\\*[\\s\\S]*?\\*/").replace(src) { m -> m.value.replace(Regex("[^\\n]"), " ") }
 
     private fun lineAround(raw: String, charOffset: Int): String {
+        if (raw.isEmpty()) return "Zeile 1: "
         val safe = charOffset.coerceIn(0, raw.length - 1)
-        val lineStart = raw.lastIndexOf('\n', safe).let { if (it < 0) 0 else it + 1 }
+        // safe - 1: steht der Offset selbst auf '\n', gehört er zur aktuellen Zeile (sonst lineStart > lineEnd)
+        val lineStart = raw.lastIndexOf('\n', safe - 1) + 1
         val lineEnd = raw.indexOf('\n', safe).let { if (it < 0) raw.length else it }
         val lineNo = raw.substring(0, lineStart).count { it == '\n' } + 1
         return "Zeile $lineNo: ${raw.substring(lineStart, lineEnd).trim().take(240)}"

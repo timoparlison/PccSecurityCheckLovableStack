@@ -3,6 +3,7 @@ package cloud.parlisoncodecouture.securitycheck.report
 import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
+import cloud.parlisoncodecouture.securitycheck.core.CodeLocation
 import kotlinx.html.DIV
 import kotlinx.html.FlowContent
 import kotlinx.html.HTML
@@ -222,6 +223,9 @@ class HtmlReportGenerator(
                                     if (f.evidence != null) {
                                         pre("evidence") { +f.evidence }
                                     }
+                                    if (f.codeLocation != null) {
+                                        renderCodeSnippet(f.codeLocation)
+                                    }
                                 }
                             }
                         }
@@ -232,6 +236,41 @@ class HtmlReportGenerator(
     }
 
     private fun DIV.renderCheck(result: CheckResult) = (this as FlowContent).renderCheck(result)
+
+    private fun FlowContent.renderCodeSnippet(loc: CodeLocation, contextLines: Int = 5) {
+        val lines = runCatching { Files.readAllLines(loc.file) }.getOrNull() ?: return
+        if (lines.isEmpty()) return
+        val total = lines.size
+        // 1-basierte Zeilen-Nummern; clamp auf gültigen Bereich
+        val matchStart = loc.startLine.coerceIn(1, total)
+        val matchEnd = loc.endLine.coerceIn(matchStart, total)
+        val displayStart = (matchStart - contextLines).coerceAtLeast(1)
+        val displayEnd = (matchEnd + contextLines).coerceAtMost(total)
+        val lnWidth = displayEnd.toString().length
+
+        val matchedCount = matchEnd - matchStart + 1
+        val summaryText = if (matchedCount == 1) {
+            "Code anzeigen — ${loc.displayPath}:${loc.startLine}"
+        } else {
+            "Code anzeigen — ${loc.displayPath}:${loc.startLine}-${loc.endLine}"
+        }
+
+        details("code-snippet") {
+            summary { +summaryText }
+            div("code-block") {
+                for (i in displayStart..displayEnd) {
+                    val raw = lines[i - 1]
+                    val isMatch = i in matchStart..matchEnd
+                    div(if (isMatch) "code-line code-line--match" else "code-line") {
+                        span("ln") { +i.toString().padStart(lnWidth) }
+                        span("lc") {
+                            if (raw.isEmpty()) +"​" else +raw // ZWSP gegen Höhen-Kollaps
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     private fun inlineCss(): String = """
         :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1f2937; }
@@ -265,6 +304,14 @@ class HtmlReportGenerator(
         .finding-body p { margin: 4px 0 0; font-size: 13px; color: #4b5563; }
         .evidence { background: #1f2937; color: #f3f4f6; padding: 8px; border-radius: 4px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; margin-top: 6px; }
         details summary { cursor: pointer; font-size: 13px; color: #374151; margin-top: 8px; }
+        .code-snippet { margin-top: 8px; }
+        .code-snippet > summary { color: #2563eb; }
+        .code-block { background: #0f172a; color: #e2e8f0; border-radius: 4px; padding: 8px 0; margin-top: 6px; font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", monospace; font-size: 12px; line-height: 1.5; overflow-x: auto; }
+        .code-line { display: flex; padding: 0 12px; white-space: pre; }
+        .code-line .ln { color: #64748b; user-select: none; margin-right: 14px; text-align: right; flex-shrink: 0; }
+        .code-line .lc { color: #e2e8f0; }
+        .code-line--match { background: rgba(250, 204, 21, 0.18); border-left: 3px solid #facc15; padding-left: 9px; }
+        .code-line--match .ln { color: #facc15; font-weight: 600; }
         .report-footer { text-align: center; color: #9ca3af; font-size: 12px; margin-top: 24px; }
     """.trimIndent()
 }

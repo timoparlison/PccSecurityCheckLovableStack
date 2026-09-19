@@ -4,6 +4,7 @@ import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
 import cloud.parlisoncodecouture.securitycheck.core.CheckId
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
+import cloud.parlisoncodecouture.securitycheck.core.CodeLocation
 import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
@@ -84,7 +85,8 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
                     .containsMatchIn(signatureAndOptions)
                 if (!hasSearchPath) {
                     invokerWithoutSearchPath++
-                    val location = relativeLocation(migrations, file, content, match.range.first)
+                    val codeLoc = codeLocationOf(migrations, file, content, match.range.first, match.range.last)
+                    val location = "${codeLoc.displayPath}:${codeLoc.startLine}"
                     findings += Finding(
                         CheckStatus.YELLOW,
                         "INVOKER-Function '$functionName' ohne SET search_path",
@@ -93,6 +95,7 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
                             "SECDEF-Function aufgerufen, kann ein Angreifer durch Anlegen gleichnamiger " +
                             "Objekte in einem höher gelisteten Schema (z. B. pg_temp) ausgeführten Code " +
                             "umlenken. Empfehlung: 'SET search_path = public, pg_temp' im Function-Header.",
+                        codeLocation = codeLoc,
                     )
                 }
             }
@@ -100,7 +103,8 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
             for (match in alterRoleRegex.findAll(content)) {
                 val role = match.groupValues[1]
                 val pathSetting = match.groupValues[2].trim()
-                val location = relativeLocation(migrations, file, content, match.range.first)
+                val codeLoc = codeLocationOf(migrations, file, content, match.range.first, match.range.last)
+                val location = "${codeLoc.displayPath}:${codeLoc.startLine}"
                 val mutable = pathSetting.contains("\$user", ignoreCase = true) ||
                     pathSetting.contains("\"\$user\"", ignoreCase = true)
                 if (mutable) {
@@ -112,6 +116,7 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
                             "nicht-deterministischen Schema-Kontext ausgeführt. Lieber statisch setzen " +
                             "(z. B. 'public, pg_temp').",
                         evidence = "search_path = $pathSetting",
+                        codeLocation = codeLoc,
                     )
                 }
             }
@@ -119,7 +124,8 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
             for (match in alterDbRegex.findAll(content)) {
                 val db = match.groupValues[1]
                 val pathSetting = match.groupValues[2].trim()
-                val location = relativeLocation(migrations, file, content, match.range.first)
+                val codeLoc = codeLocationOf(migrations, file, content, match.range.first, match.range.last)
+                val location = "${codeLoc.displayPath}:${codeLoc.startLine}"
                 findings += Finding(
                     CheckStatus.YELLOW,
                     "ALTER DATABASE '$db' setzt search_path",
@@ -127,6 +133,7 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
                         "Sessions. Prüfen, dass kein '\$user'-Anteil enthalten ist und Schemas " +
                         "(insbesondere pg_temp) bewusst sortiert sind.",
                     evidence = "search_path = $pathSetting",
+                    codeLocation = codeLoc,
                 )
             }
         }
@@ -158,9 +165,10 @@ class PgSearchPathHardeningCheck @JvmOverloads constructor(
         return resultOf(findings, summary, start)
     }
 
-    private fun relativeLocation(root: Path, file: Path, content: String, charOffset: Int): String {
+    private fun codeLocationOf(root: Path, file: Path, content: String, startOffset: Int, endOffset: Int): CodeLocation {
         val rel = root.relativize(file).toString()
-        val line = content.substring(0, charOffset.coerceAtMost(content.length)).count { it == '\n' } + 1
-        return "$rel:$line"
+        val startLine = content.substring(0, startOffset.coerceAtMost(content.length)).count { it == '\n' } + 1
+        val endLine = content.substring(0, endOffset.coerceAtMost(content.length)).count { it == '\n' } + 1
+        return CodeLocation(file = file, displayPath = rel, startLine = startLine, endLine = endLine)
     }
 }
