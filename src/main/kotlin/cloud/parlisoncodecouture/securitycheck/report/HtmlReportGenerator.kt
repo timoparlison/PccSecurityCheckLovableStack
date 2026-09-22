@@ -172,6 +172,12 @@ class HtmlReportGenerator(
               }
               if (!anyActive || match) { c.classList.remove('hidden'); }
               else { c.classList.add('hidden'); }
+              // Innerhalb eines sichtbaren Checks nur die Findings der aktiven Severities zeigen,
+              // sonst geht z. B. ein einzelnes RED zwischen hunderten YELLOW/GREEN unter.
+              c.querySelectorAll('.finding').forEach(function(f) {
+                if (!anyActive || active[f.getAttribute('data-severity')]) { f.classList.remove('hidden'); }
+                else { f.classList.add('hidden'); }
+              });
             });
             if (resetBtn) { if (anyActive) resetBtn.classList.add('visible'); else resetBtn.classList.remove('visible'); }
           }
@@ -230,6 +236,7 @@ class HtmlReportGenerator(
                     ul("findings") {
                         result.findings.forEach { f ->
                             li("finding") {
+                                attributes["data-severity"] = f.severity.name
                                 span("severity-badge") {
                                     attributes["style"] = "background:${f.severity.color}"
                                     +f.severity.label
@@ -310,7 +317,7 @@ class HtmlReportGenerator(
         .filter-badge.inactive { opacity: 0.3; }
         .filter-reset { font-size: 12px; color: #2563eb; cursor: pointer; text-decoration: underline; margin-left: 8px; display: none; }
         .filter-reset.visible { display: inline; }
-        .check.hidden { display: none; }
+        .check.hidden, .finding.hidden { display: none; }
         .check-header { display: flex; align-items: center; gap: 12px; }
         .check-title-block { flex-grow: 1; }
         .check-header h2 { margin: 0; font-size: 18px; }
