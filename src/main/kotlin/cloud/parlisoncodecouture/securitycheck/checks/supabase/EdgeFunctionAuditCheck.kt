@@ -68,7 +68,9 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
 
         val red = findings.count { it.severity == CheckStatus.RED }
         val yellow = findings.count { it.severity == CheckStatus.YELLOW }
-        val summary = "${tsFiles.size} TS-Datei(en) gescannt: $red kritisch, $yellow Warnung(en), ${cleanFiles.size} unauffällig."
+        val accepted = findings.count { it.severity == CheckStatus.ACCEPTED }
+        val summary = "${tsFiles.size} TS-Datei(en) gescannt: $red kritisch, $yellow Warnung(en), " +
+            "$accepted Ausnahme(n), ${cleanFiles.size} unauffällig."
         return resultOf(findings, summary, start)
     }
 
@@ -88,6 +90,14 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
                     "Diese Kombination ist explizit verboten und wird von Browsern ignoriert — Symptom für eine " +
                         "Misconfig. Bei Production-Frontends mit Cookies/Authorization-Headern müssen erlaubte Origins " +
                         "explizit aufgelistet sein.",
+                    evidence = lineAround(raw, corsWildcardHit.range.first),
+                    codeLocation = locationOf(file, rel, raw, corsWildcardHit.range.first),
+                )
+            } else if (isTestFile(rel)) {
+                findings += Finding(
+                    CheckStatus.ACCEPTED,
+                    "$rel: CORS '*' Wildcard in Testcode (Ausnahme)",
+                    "Die Datei ist Testcode und wird nicht als Function ausgerollt — der Header erreicht keinen Browser.",
                     evidence = lineAround(raw, corsWildcardHit.range.first),
                     codeLocation = locationOf(file, rel, raw, corsWildcardHit.range.first),
                 )
@@ -218,5 +228,16 @@ class EdgeFunctionAuditCheck @JvmOverloads constructor(
         val lineEnd = raw.indexOf('\n', safe).let { if (it < 0) raw.length else it }
         val lineNo = raw.substring(0, lineStart).count { it == '\n' } + 1
         return "Zeile $lineNo: ${raw.substring(lineStart, lineEnd).trim().take(240)}"
+    }
+
+    internal companion object {
+        private val testFileName = Regex("""[._-](test|spec)\.tsx?$""", RegexOption.IGNORE_CASE)
+        private val testDirs = setOf("__tests__", "tests", "test")
+
+        /** Testcode (__tests__/, tests/, *_test.ts, *.spec.ts) wird nicht als Edge Function ausgerollt. */
+        fun isTestFile(relativePath: String): Boolean {
+            val segments = relativePath.replace('\\', '/').split('/')
+            return segments.dropLast(1).any { it.lowercase() in testDirs } || testFileName.containsMatchIn(segments.last())
+        }
     }
 }

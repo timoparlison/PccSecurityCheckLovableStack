@@ -49,6 +49,10 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
 
     private val evilOrigin = "https://evil.example.com"
 
+    // Hosted Supabase (*.supabase.co): Header der Plattform-Endpoints setzt Supabase selbst, der Kunde kann sie
+    // nicht ändern. Bei Custom Domain oder Self-Hosting bleibt es bei Warnungen.
+    private val platformHosted = isPlatformHosted(config.baseUrl)
+
     override fun run(): CheckResult {
         val start = Instant.now()
         val findings = mutableListOf<Finding>()
@@ -85,7 +89,9 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
 
         val red = findings.count { it.severity == CheckStatus.RED }
         val yellow = findings.count { it.severity == CheckStatus.YELLOW }
-        val summary = "${probes.size} Endpoint(s) geprüft: $red kritisch, $yellow Warnung(en)."
+        val accepted = findings.count { it.severity == CheckStatus.ACCEPTED }
+        val summary = "${probes.size} Endpoint(s) geprüft: $red kritisch, $yellow Warnung(en), " +
+            "$accepted Plattform-Ausnahme(n)."
         return resultOf(findings, summary, start)
     }
 
@@ -133,6 +139,14 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
                 "Diese Kombination ist von CORS-Spec verboten, wird aber von älteren Browsern teils akzeptiert. " +
                     "Resultat: jede fremde Origin könnte mit Credentials auf den Endpoint zugreifen.",
             )
+            acao == evilOrigin && acac == "true" && probe.bearerTokenOnly && platformHosted -> findings += Finding(
+                CheckStatus.ACCEPTED,
+                "$label: reflektiert Origin + Allow-Credentials 'true' (Plattformverhalten, Ausnahme)",
+                "Allow-Origin spiegelt die gesendete Origin ($evilOrigin) zurück UND erlaubt Credentials. Auf " +
+                    "*.supabase.co setzt Supabase diese Header selbst; der Kunde kann sie nicht ändern. Nicht " +
+                    "ausnutzbar, solange die Sitzung als Bearer-Token (localStorage) statt als Cookie geführt wird — " +
+                    "legt das Frontend Supabase-Sessions in Cookies ab, neu bewerten.",
+            )
             acao == evilOrigin && acac == "true" && probe.bearerTokenOnly -> findings += Finding(
                 CheckStatus.YELLOW,
                 "$label: reflektiert Origin + Allow-Credentials 'true' (Bearer-Token-Kontext)",
@@ -166,33 +180,41 @@ class ApiHttpHardeningCheck @JvmOverloads constructor(
     }
 
     private fun checkSecurityHeaders(label: String, headers: Map<String, List<String>>, findings: MutableList<Finding>) {
+        // Fehlende Header an Plattform-Endpoints: dokumentieren, aber nicht als Warnung werten.
+        val missing = if (platformHosted) CheckStatus.ACCEPTED else CheckStatus.YELLOW
+        val platformNote = if (platformHosted) " Header wird von der Supabase-Plattform gesetzt und ist vom Kunden nicht änderbar (Ausnahme)." else ""
         val hsts = headerCi(headers, "Strict-Transport-Security")
         val xcto = headerCi(headers, "X-Content-Type-Options")
         val ref = headerCi(headers, "Referrer-Policy")
 
         if (hsts.isNullOrBlank()) {
             findings += Finding(
-                CheckStatus.YELLOW,
+                missing,
                 "$label: HSTS fehlt",
                 "Strict-Transport-Security nicht gesetzt — Downgrade-Angriffe auf HTTPS bleiben möglich. " +
-                    "Empfehlung: 'max-age=31536000; includeSubDomains'.",
+                    "Empfehlung: 'max-age=31536000; includeSubDomains'.$platformNote",
             )
         }
         if (xcto.isNullOrBlank()) {
             findings += Finding(
-                CheckStatus.YELLOW,
+                missing,
                 "$label: X-Content-Type-Options fehlt",
                 "Ohne 'X-Content-Type-Options: nosniff' kann der Browser MIME-Typen erraten — relevant bei " +
-                    "User-Uploads, die als JSON ausgeliefert werden.",
+                    "User-Uploads, die als JSON ausgeliefert werden.$platformNote",
             )
         }
         if (ref.isNullOrBlank()) {
             findings += Finding(
-                CheckStatus.YELLOW,
+                missing,
                 "$label: Referrer-Policy fehlt",
                 "Ohne Referrer-Policy lecken Anfrage-URLs (inkl. Query-Strings mit Tokens) im Referer-Header " +
-                    "an Drittseiten.",
+                    "an Drittseiten.$platformNote",
             )
         }
+    }
+
+    internal companion object {
+        fun isPlatformHosted(baseUrl: String): Boolean =
+            runCatching { URI.create(baseUrl).host?.lowercase()?.endsWith(".supabase.co") == true }.getOrDefault(false)
     }
 }
