@@ -32,4 +32,15 @@ internal object PlPgSqlHeuristics {
     fun hasUnsafeFormatExecute(body: String): Boolean = unsafeFormatExecute.containsMatchIn(stripLineComments(body))
 
     fun hasConcatExecute(body: String): Boolean = concatExecute.containsMatchIn(stripLineComments(body))
+
+    /**
+     * true, wenn an [offset] ein String-Literal beginnt, z. B. `EXECUTE format('CREATE OR REPLACE FUNCTION …')`
+     * in einem DO-Block. Solche Stellen sind keine Function-Definition, sondern Text, den eine Migration
+     * zur Laufzeit ausführt — der Rumpf der Function steht nicht im Dateitext.
+     */
+    fun startsInsideStringLiteral(content: String, offset: Int): Boolean {
+        var i = offset - 1
+        while (i >= 0 && content[i].isWhitespace()) i--
+        return i >= 0 && content[i] == '\''
+    }
 }

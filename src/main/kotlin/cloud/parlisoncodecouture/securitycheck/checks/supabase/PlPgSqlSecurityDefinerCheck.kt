@@ -75,6 +75,9 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
         for (file in sqlFiles) {
             val content = runCatching { file.readText() }.getOrNull() ?: continue
             for (match in funcRegex.findAll(content)) {
+                // CREATE FUNCTION als Text in EXECUTE format('…') (DO-Block einer Migration): kein eigener Rumpf,
+                // sonst würde der umgebende DO-Block dieser Function zugeschrieben.
+                if (PlPgSqlHeuristics.startsInsideStringLiteral(content, match.range.first)) continue
                 totalFunctions++
                 val functionName = match.groupValues[1]
                 val signatureAndOptions = match.groupValues[2]

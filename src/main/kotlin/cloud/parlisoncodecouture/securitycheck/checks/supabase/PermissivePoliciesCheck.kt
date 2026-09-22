@@ -24,7 +24,7 @@ class PermissivePoliciesCheck(
             "WITH CHECK bei INSERT/UPDATE. Es werden KEINE Functions im Zielsystem angelegt."
     override val category = "Supabase / RLS"
 
-    private data class Policy(
+    internal data class Policy(
         val tableName: String,
         val policyName: String,
         val cmd: String,
@@ -76,47 +76,7 @@ class PermissivePoliciesCheck(
             )
         }
 
-        val findings = mutableListOf<Finding>()
-        for (p in policies) {
-            val rolesStr = if (p.roles.isEmpty()) "PUBLIC" else p.roles.joinToString(",")
-            val hitsAnon = p.roles.isEmpty() || "anon" in p.roles || "public" in p.roles.map { it.lowercase() }
-            val hitsAuth = "authenticated" in p.roles
-            val qualIsTrue = p.qual == "true"
-            val checkIsTrue = p.withCheck == "true"
-
-            when {
-                qualIsTrue && hitsAnon && p.cmd in listOf("SELECT", "ALL") -> findings += Finding(
-                    CheckStatus.RED,
-                    "Policy '${p.policyName}' auf '${p.tableName}': anonymer Read-All",
-                    "cmd=${p.cmd}, roles=$rolesStr, USING=true. Jeder anonyme Client liest alle Zeilen.",
-                )
-                qualIsTrue && hitsAuth && p.cmd in listOf("SELECT", "ALL") -> findings += Finding(
-                    CheckStatus.YELLOW,
-                    "Policy '${p.policyName}' auf '${p.tableName}': authenticated Read-All",
-                    "cmd=${p.cmd}, roles=$rolesStr, USING=true. Jeder eingeloggte User sieht alle Zeilen — meist nicht gewollt.",
-                )
-                qualIsTrue && p.cmd in listOf("UPDATE", "DELETE", "ALL") -> findings += Finding(
-                    CheckStatus.RED,
-                    "Policy '${p.policyName}' auf '${p.tableName}': USING=true für ${p.cmd}",
-                    "Beliebige Rolle ($rolesStr) darf ${p.cmd} auf allen Zeilen ausführen.",
-                )
-                checkIsTrue && p.cmd in listOf("INSERT", "UPDATE", "ALL") -> findings += Finding(
-                    CheckStatus.RED,
-                    "Policy '${p.policyName}' auf '${p.tableName}': WITH CHECK=true für ${p.cmd}",
-                    "Keine Validierung der zu schreibenden Daten — beliebige Werte gehen durch.",
-                )
-                p.cmd == "UPDATE" && p.withCheck.isNullOrBlank() -> findings += Finding(
-                    CheckStatus.YELLOW,
-                    "Policy '${p.policyName}' auf '${p.tableName}': UPDATE ohne WITH CHECK",
-                    "Klassisches Anti-Pattern: User darf eigene Zeile updaten, kann dabei aber den Owner-FK auf eine andere User-ID setzen.",
-                )
-                else -> findings += Finding(
-                    CheckStatus.GREEN,
-                    "Policy '${p.policyName}' auf '${p.tableName}' (${p.cmd}, roles=$rolesStr)",
-                    "USING=${p.qual?.take(120) ?: "-"}, WITH CHECK=${p.withCheck?.take(120) ?: "-"}",
-                )
-            }
-        }
+        val findings = policies.map(::evaluate)
 
         val red = findings.count { it.severity == CheckStatus.RED }
         val yellow = findings.count { it.severity == CheckStatus.YELLOW }
@@ -124,5 +84,58 @@ class PermissivePoliciesCheck(
         val tableCount = policies.map { it.tableName }.distinct().size
         val summary = "${policies.size} Policies in $tableCount Tabellen: $green OK, $yellow Warnung(en), $red kritisch."
         return resultOf(findings, summary, start)
+    }
+
+    internal companion object {
+        private val BYPASS_RLS_ROLES = setOf("service_role", "postgres", "supabase_admin")
+
+        fun evaluate(p: Policy): Finding {
+            val rolesStr = if (p.roles.isEmpty()) "PUBLIC" else p.roles.joinToString(",")
+            val hitsAnon = p.roles.isEmpty() || "anon" in p.roles || "public" in p.roles.map { it.lowercase() }
+            val hitsAuth = "authenticated" in p.roles
+            val qualIsTrue = p.qual == "true"
+            val checkIsTrue = p.withCheck == "true"
+            // Rollen mit BYPASSRLS ignorieren Policies ohnehin; eine Policy nur für sie öffnet nichts.
+            val onlyBypassRoles = p.roles.isNotEmpty() && p.roles.all { it.lowercase() in BYPASS_RLS_ROLES }
+
+            return when {
+                onlyBypassRoles -> Finding(
+                    CheckStatus.GREEN,
+                    "Policy '${p.policyName}' auf '${p.tableName}' (${p.cmd}, roles=$rolesStr)",
+                    "Gilt nur für Rollen mit BYPASSRLS — wirkungslos, aber harmlos. " +
+                        "USING=${p.qual?.take(120) ?: "-"}, WITH CHECK=${p.withCheck?.take(120) ?: "-"}",
+                )
+                qualIsTrue && hitsAnon && p.cmd in listOf("SELECT", "ALL") -> Finding(
+                    CheckStatus.RED,
+                    "Policy '${p.policyName}' auf '${p.tableName}': anonymer Read-All",
+                    "cmd=${p.cmd}, roles=$rolesStr, USING=true. Jeder anonyme Client liest alle Zeilen.",
+                )
+                qualIsTrue && hitsAuth && p.cmd in listOf("SELECT", "ALL") -> Finding(
+                    CheckStatus.YELLOW,
+                    "Policy '${p.policyName}' auf '${p.tableName}': authenticated Read-All",
+                    "cmd=${p.cmd}, roles=$rolesStr, USING=true. Jeder eingeloggte User sieht alle Zeilen — meist nicht gewollt.",
+                )
+                qualIsTrue && p.cmd in listOf("UPDATE", "DELETE", "ALL") -> Finding(
+                    CheckStatus.RED,
+                    "Policy '${p.policyName}' auf '${p.tableName}': USING=true für ${p.cmd}",
+                    "Beliebige Rolle ($rolesStr) darf ${p.cmd} auf allen Zeilen ausführen.",
+                )
+                checkIsTrue && p.cmd in listOf("INSERT", "UPDATE", "ALL") -> Finding(
+                    CheckStatus.RED,
+                    "Policy '${p.policyName}' auf '${p.tableName}': WITH CHECK=true für ${p.cmd}",
+                    "Keine Validierung der zu schreibenden Daten — beliebige Werte gehen durch.",
+                )
+                p.cmd == "UPDATE" && p.withCheck.isNullOrBlank() -> Finding(
+                    CheckStatus.YELLOW,
+                    "Policy '${p.policyName}' auf '${p.tableName}': UPDATE ohne WITH CHECK",
+                    "Klassisches Anti-Pattern: User darf eigene Zeile updaten, kann dabei aber den Owner-FK auf eine andere User-ID setzen.",
+                )
+                else -> Finding(
+                    CheckStatus.GREEN,
+                    "Policy '${p.policyName}' auf '${p.tableName}' (${p.cmd}, roles=$rolesStr)",
+                    "USING=${p.qual?.take(120) ?: "-"}, WITH CHECK=${p.withCheck?.take(120) ?: "-"}",
+                )
+            }
+        }
     }
 }
