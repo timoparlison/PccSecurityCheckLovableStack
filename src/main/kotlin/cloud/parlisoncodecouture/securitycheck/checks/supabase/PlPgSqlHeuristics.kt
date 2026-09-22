@@ -27,7 +27,51 @@ internal object PlPgSqlHeuristics {
     /** Entfernt `--`-Zeilenkommentare, damit z. B. ein auskommentiertes auth.uid() nicht als Check zählt. */
     fun stripLineComments(body: String): String = body.replace(lineComment, "")
 
-    fun hasAuthOrRoleCheck(body: String): Boolean = authOrRoleCheck.containsMatchIn(stripLineComments(body))
+    /**
+     * [guards]: projekteigene Guard-Functions (z. B. user_org_id(), has_full_access()), deren Aufruf als
+     * Check zählt — siehe [guardFunctions].
+     */
+    fun hasAuthOrRoleCheck(body: String, guards: Set<String> = emptySet()): Boolean {
+        val code = stripLineComments(body)
+        if (authOrRoleCheck.containsMatchIn(code)) return true
+        return guards.isNotEmpty() && callsAny(code, guards)
+    }
+
+    /** Quelltext einer Function, soweit ihn [guardFunctions] braucht. */
+    data class FunctionSource(val name: String, val hasNoArgs: Boolean, val returnsSimpleScalar: Boolean, val body: String)
+
+    /**
+     * Ermittelt die projekteigenen Guard-Functions: parameterlose Functions mit einfachem Rückgabetyp
+     * (siehe [returnsSimpleScalar]), die direkt oder über andere Guards auth.uid()/auth.jwt() lesen —
+     * also user_org_id(), has_full_access(), is_portal_user(), portal_customer_ids().
+     * Bewusst eng: Functions mit Parametern (is_working_day(date)) oder Datenrückgabe (list_…() → jsonb)
+     * lesen zwar ebenfalls die Organisation des Aufrufers, prüfen aber nichts. Sie als Guard zu zählen,
+     * würde echte Befunde verstecken.
+     */
+    fun guardFunctions(functions: Collection<FunctionSource>): Set<String> {
+        val candidates = functions.filter { it.hasNoArgs && it.returnsSimpleScalar }
+        val guards = mutableSetOf<String>()
+        do {
+            val added = candidates
+                .filter { it.name.lowercase() !in guards && hasAuthOrRoleCheck(it.body, guards) }
+                .map { it.name.lowercase() }
+            guards += added
+        } while (added.isNotEmpty())
+        return guards
+    }
+
+    private val simpleScalarReturn = Regex(
+        """\bRETURNS\s+(?:boolean|uuid|text|uuid\[]|SETOF\s+uuid|TABLE\s*\(\s*\w+\s+uuid\s*\))(?=\s)""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** RETURNS boolean/uuid/text/uuid[]/SETOF uuid/TABLE(x uuid) — der Kopf einer Function-Definition. */
+    fun returnsSimpleScalar(header: String): Boolean = simpleScalarReturn.containsMatchIn(header)
+
+    private val functionCall = Regex("""\b(?:public\.)?([a-z_][a-z0-9_]*)\s*\(""", RegexOption.IGNORE_CASE)
+
+    private fun callsAny(code: String, names: Set<String>): Boolean =
+        functionCall.findAll(code).any { it.groupValues[1].lowercase() in names }
 
     fun hasUnsafeFormatExecute(body: String): Boolean = unsafeFormatExecute.containsMatchIn(stripLineComments(body))
 

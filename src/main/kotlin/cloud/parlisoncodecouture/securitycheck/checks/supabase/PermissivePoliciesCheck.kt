@@ -20,8 +20,8 @@ class PermissivePoliciesCheck(
     override val name = "Permissive RLS-Policies"
     override val description =
         "Liest pg_policies (read-only) und sucht typische Risiken: USING (true) bzw. " +
-            "WITH CHECK (true) auf anon/authenticated, asymmetrische SELECT-vs-UPDATE-Policies, fehlende " +
-            "WITH CHECK bei INSERT/UPDATE. Es werden KEINE Functions im Zielsystem angelegt."
+            "WITH CHECK (true) auf anon/authenticated. Fehlendes WITH CHECK bei UPDATE ist kein Befund: Postgres " +
+            "wendet dann USING auch auf die neue Zeile an. Es werden KEINE Functions im Zielsystem angelegt."
     override val category = "Supabase / RLS"
 
     internal data class Policy(
@@ -124,11 +124,6 @@ class PermissivePoliciesCheck(
                     CheckStatus.RED,
                     "Policy '${p.policyName}' auf '${p.tableName}': WITH CHECK=true für ${p.cmd}",
                     "Keine Validierung der zu schreibenden Daten — beliebige Werte gehen durch.",
-                )
-                p.cmd == "UPDATE" && p.withCheck.isNullOrBlank() -> Finding(
-                    CheckStatus.YELLOW,
-                    "Policy '${p.policyName}' auf '${p.tableName}': UPDATE ohne WITH CHECK",
-                    "Klassisches Anti-Pattern: User darf eigene Zeile updaten, kann dabei aber den Owner-FK auf eine andere User-ID setzen.",
                 )
                 else -> Finding(
                     CheckStatus.GREEN,

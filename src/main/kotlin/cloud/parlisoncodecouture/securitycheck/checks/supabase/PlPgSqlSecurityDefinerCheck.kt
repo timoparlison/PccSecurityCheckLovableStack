@@ -58,6 +58,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
 
         val sqlFiles = migrations.walk()
             .filter { it.isRegularFile() && it.extension.equals("sql", ignoreCase = true) }
+            .sortedBy { it.fileName.toString() }
             .toList()
 
         if (sqlFiles.isEmpty()) {
@@ -66,6 +67,8 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
 
         val runtimeHardened: Map<String, Boolean>? = runtimeHardenedLookup()
         val runtimeAvailable = runtimeHardened != null
+
+        val guards = guardFunctionsIn(sqlFiles)
 
         val findings = mutableListOf<Finding>()
         var totalFunctions = 0
@@ -125,7 +128,7 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
                     }
                 }
 
-                val callsAuthOrRoleCheck = PlPgSqlHeuristics.hasAuthOrRoleCheck(body)
+                val callsAuthOrRoleCheck = PlPgSqlHeuristics.hasAuthOrRoleCheck(body, guards)
                 if (!callsAuthOrRoleCheck) {
                     findingsForFn += Finding(
                         CheckStatus.YELLOW,
@@ -198,6 +201,29 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
         }
         val summary = "$secdefFunctions SECDEF von $totalFunctions Functions in ${sqlFiles.size} Migrations geprüft.$overlayNote"
         return resultOf(findings, summary, start)
+    }
+
+    /**
+     * Vorlauf über alle Migrations: die jeweils letzte Fassung jeder Function (Dateien nach Namen
+     * sortiert = Migrationsreihenfolge) und daraus die projekteigenen Guard-Functions.
+     */
+    private fun guardFunctionsIn(sqlFiles: List<Path>): Set<String> {
+        val latest = linkedMapOf<String, PlPgSqlHeuristics.FunctionSource>()
+        for (file in sqlFiles) {
+            val content = runCatching { file.readText() }.getOrNull() ?: continue
+            for (match in funcRegex.findAll(content)) {
+                if (PlPgSqlHeuristics.startsInsideStringLiteral(content, match.range.first)) continue
+                val name = match.groupValues[1].substringAfterLast('.').lowercase()
+                val args = match.value.substringAfter('(').substringBefore(')')
+                latest[name] = PlPgSqlHeuristics.FunctionSource(
+                    name = name,
+                    hasNoArgs = args.isBlank(),
+                    returnsSimpleScalar = PlPgSqlHeuristics.returnsSimpleScalar(match.groupValues[2] + " "),
+                    body = match.groupValues[4],
+                )
+            }
+        }
+        return PlPgSqlHeuristics.guardFunctions(latest.values)
     }
 
     private fun codeLocationOf(root: Path, file: Path, content: String, startOffset: Int, endOffset: Int): CodeLocation {

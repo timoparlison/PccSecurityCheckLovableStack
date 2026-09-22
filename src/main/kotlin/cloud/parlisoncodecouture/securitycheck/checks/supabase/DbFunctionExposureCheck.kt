@@ -101,9 +101,10 @@ class DbFunctionExposureCheck(
         val migrationIndex = MigrationIndex.load(config.migrationsPath)
         val findings = mutableListOf<Finding>()
 
+        val guards = PlPgSqlHeuristics.guardFunctions(functions.map { it.toSource() })
         val secdef = functions.filter { it.securityDefiner }
         for (fn in secdef) {
-            findings += evaluateSecdef(fn, migrationIndex?.locate(fn.name), migrationIndex != null)
+            findings += evaluateSecdef(fn, migrationIndex?.locate(fn.name), migrationIndex != null, guards)
         }
 
         val invokerAnon = functions.filter { !it.securityDefiner && it.anonExecute }
@@ -178,7 +179,12 @@ class DbFunctionExposureCheck(
     companion object {
 
         /** Bewertet eine SECURITY DEFINER-Function; genau ein Finding pro Function. */
-        internal fun evaluateSecdef(fn: LiveFunction, codeLoc: CodeLocation?, migrationsScanned: Boolean): Finding {
+        internal fun evaluateSecdef(
+            fn: LiveFunction,
+            codeLoc: CodeLocation?,
+            migrationsScanned: Boolean,
+            guards: Set<String> = emptySet(),
+        ): Finding {
             val exposed = fn.exposure != Exposure.NONE
             val problems = mutableListOf<Pair<CheckStatus, String>>()
 
@@ -190,7 +196,7 @@ class DbFunctionExposureCheck(
                 problems += (if (exposed) CheckStatus.RED else CheckStatus.YELLOW) to
                     "Dynamisches SQL per EXECUTE ohne USING bzw. per ||-Konkatenation — SQL-Injection-Vektor."
             }
-            val hasAuthCheck = PlPgSqlHeuristics.hasAuthOrRoleCheck(fn.definition)
+            val hasAuthCheck = PlPgSqlHeuristics.hasAuthOrRoleCheck(fn.definition, guards)
             when {
                 fn.exposure == Exposure.ANON && !hasAuthCheck -> problems += CheckStatus.RED to
                     "Von anon aufrufbar und kein erkennbarer auth.uid()/role-Check: jeder Besucher kann die " +
@@ -232,7 +238,7 @@ class DbFunctionExposureCheck(
                 appendLine("Aufrufbar für: ${fn.exposure.label}.")
                 problems.forEach { (_, text) -> appendLine("• $text") }
                 location?.let { appendLine(it) }
-                append("Fix: ").append(remediation(fn))
+                append("Fix: ").append(remediation(fn, hasAuthCheck))
             }
             return Finding(
                 CheckStatus.worstOf(problems.map { it.first }),
@@ -243,7 +249,7 @@ class DbFunctionExposureCheck(
             )
         }
 
-        private fun remediation(fn: LiveFunction): String {
+        private fun remediation(fn: LiveFunction, hasAuthCheck: Boolean): String {
             val steps = mutableListOf<String>()
             val target = "public.${fn.name}(${fn.identityArgs})"
             if (fn.exposure == Exposure.ANON) {
@@ -252,7 +258,7 @@ class DbFunctionExposureCheck(
                     "(falls eingeloggte Nutzer sie brauchen: GRANT EXECUTE ON FUNCTION $target TO authenticated;)"
             }
             if (!fn.hasPinnedSearchPath) steps += "ALTER FUNCTION $target SET search_path = '';"
-            if (!PlPgSqlHeuristics.hasAuthOrRoleCheck(fn.definition) && fn.exposure != Exposure.NONE) {
+            if (!hasAuthCheck && fn.exposure != Exposure.NONE) {
                 steps += "Im Rumpf den Aufrufer per auth.uid() gegen die übergebenen Parameter prüfen."
             }
             if (PlPgSqlHeuristics.hasUnsafeFormatExecute(fn.definition) || PlPgSqlHeuristics.hasConcatExecute(fn.definition)) {
@@ -262,5 +268,12 @@ class DbFunctionExposureCheck(
         }
 
         private fun yesNo(b: Boolean) = if (b) "ja" else "nein"
+
+        internal fun LiveFunction.toSource() = PlPgSqlHeuristics.FunctionSource(
+            name = name,
+            hasNoArgs = identityArgs.isBlank(),
+            returnsSimpleScalar = PlPgSqlHeuristics.returnsSimpleScalar(definition),
+            body = definition,
+        )
     }
 }

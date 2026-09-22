@@ -112,12 +112,6 @@ class StorageObjectsRlsCheck(
                     "Keine Validierung beim Upload — beliebige Bucket-/Pfad-Werte gehen durch. Kann zum " +
                         "Überschreiben fremder Objekte missbraucht werden.",
                 )
-                p.cmd == "UPDATE" && p.withCheck.isNullOrBlank() -> findings += Finding(
-                    CheckStatus.YELLOW,
-                    "Storage-Policy '${p.policyName}': UPDATE ohne WITH CHECK",
-                    "User darf eigene Objekte ändern, kann dabei aber Owner/Pfad auf einen fremden User " +
-                        "umbiegen. WITH CHECK fehlt.",
-                )
                 else -> findings += Finding(
                     CheckStatus.GREEN,
                     "Storage-Policy '${p.policyName}' (${p.cmd}, roles=$rolesStr)",
