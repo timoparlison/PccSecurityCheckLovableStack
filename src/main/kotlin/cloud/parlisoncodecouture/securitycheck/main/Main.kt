@@ -20,10 +20,10 @@ private const val MODE_PROP = "mode"
 private const val MODE_SQL_EXPORT = "sql-export"
 
 fun main() {
-    val config = ConfigLoader.load()
+    // Der SQL-Export fasst das Zielsystem nicht an — er darf deshalb auch ohne Service-Role-Key laufen.
     when (val mode = runtimeValue(MODE_ENV, MODE_PROP)) {
-        null, "run" -> runChecks(config)
-        MODE_SQL_EXPORT -> exportSnapshotSql(config)
+        null, "run" -> runChecks(ConfigLoader.load())
+        MODE_SQL_EXPORT -> exportSnapshotSql(ConfigLoader.load(requireServiceRoleKey = false))
         else -> error("Unbekannter mode='$mode'. Erlaubt: run (Default), $MODE_SQL_EXPORT.")
     }
 }
@@ -40,6 +40,15 @@ private fun exportSnapshotSql(config: SupabaseConfig) {
 
     println()
     println("=".repeat(72))
+    // Häufigste Verwechslung: 'mode=sql-export' bleibt in der Run-Konfiguration stehen,
+    // und der eigentlich gewollte Prüflauf findet nie statt.
+    if (Files.isRegularFile(config.snapshotPath)) {
+        println("HINWEIS: Es wurde NUR das SQL erzeugt — es lief KEIN Check.")
+        println("Unter ${config.snapshotPath} liegt bereits ein Snapshot.")
+        println("Wolltest du prüfen statt exportieren? Dann 'mode=sql-export' aus der")
+        println("Run-Konfiguration entfernen und nur ACTIVE_PROFILE + SUPABASE_SERVICE_ROLE_KEY setzen.")
+        println("-".repeat(72))
+    }
     println("SQL-Export für Profil '$profile' geschrieben:")
     println("  $target")
     println()
@@ -78,6 +87,7 @@ private fun runChecks(config: SupabaseConfig) {
         println("=".repeat(72))
         println("Profil: $profile  ·  Lauf: ${requested ?: "all"}  ·  Gesamtbewertung: $overall")
         println("Katalogdaten: ${catalogLine(catalog)}")
+        (catalog as? CatalogAccess.Available)?.notes?.forEach { println("  ! $it") }
         catalog.sourceOrNull?.warnings?.forEach { println("  ! $it") }
         results.forEach { println("  [${it.status}] ${it.checkName} — ${it.summary}") }
         println()
@@ -93,6 +103,12 @@ private fun catalogLine(catalog: CatalogAccess): String = when (catalog) {
     is CatalogAccess.Unavailable -> "keine Quelle — ${catalog.reason}"
 }
 
+/**
+ * Env-Variablen sind unter macOS/Linux case-sensitiv. In IntelliJ tippt man den Namen
+ * leicht so, wie die JVM-Property heißt ('mode=...' statt 'MODE=...') — das lief vorher
+ * ins Leere. Deshalb werden beide Schreibweisen akzeptiert.
+ */
 private fun runtimeValue(envName: String, propName: String): String? =
     System.getenv(envName)?.trim()?.ifEmpty { null }
+        ?: System.getenv(propName)?.trim()?.ifEmpty { null }
         ?: System.getProperty(propName)?.trim()?.ifEmpty { null }

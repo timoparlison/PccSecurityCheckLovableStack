@@ -33,6 +33,14 @@ interface CatalogSource : AutoCloseable {
 
     fun query(query: CatalogQuery): List<Row>
 
+    /**
+     * Stellt fest, ob die Quelle wirklich benutzbar ist — VOR der ersten Check-Query.
+     * Ohne das gilt eine Quelle als verfügbar, sobald sich das Objekt bauen lässt, und
+     * die Fallback-Kette greift nicht mehr (ein falsches DB-Passwort würde den Snapshot
+     * verdecken, statt an ihn weiterzureichen).
+     */
+    fun validate() {}
+
     override fun close() {}
 }
 

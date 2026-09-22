@@ -15,7 +15,11 @@ sealed interface CatalogAccess {
     val sourceOrNull: CatalogSource?
     val reason: String?
 
-    data class Available(val source: CatalogSource) : CatalogAccess {
+    data class Available(
+        val source: CatalogSource,
+        /** Quellen, die vor dieser probiert und verworfen wurden — gehören sichtbar in den Report. */
+        val notes: List<String> = emptyList(),
+    ) : CatalogAccess {
         override val sourceOrNull: CatalogSource get() = source
         override val reason: String? get() = null
     }
@@ -38,7 +42,7 @@ object CatalogSources {
     fun resolve(config: SupabaseConfig): CatalogAccess {
         val forced = config.catalogSource
         if (forced != null) {
-            return runCatching { create(forced, config) }.fold(
+            return runCatching { create(forced, config).also { it.validate() } }.fold(
                 onSuccess = { CatalogAccess.Available(it) },
                 onFailure = {
                     CatalogAccess.Unavailable(
@@ -58,10 +62,11 @@ object CatalogSources {
 
         val failures = mutableListOf<String>()
         for (kind in candidates) {
-            runCatching { create(kind, config) }
-                .onSuccess {
-                    if (failures.isNotEmpty()) log.warn { "Katalogquelle(n) übersprungen: ${failures.joinToString("; ")}" }
-                    return CatalogAccess.Available(it)
+            runCatching { create(kind, config).also { it.validate() } }
+                .onSuccess { source ->
+                    val notes = failures.map { "Katalogquelle übersprungen — $it" }
+                    notes.forEach { log.warn { it } }
+                    return CatalogAccess.Available(source, notes)
                 }
                 .onFailure { failures += "${kind.id}: ${it.message ?: it::class.simpleName}" }
         }

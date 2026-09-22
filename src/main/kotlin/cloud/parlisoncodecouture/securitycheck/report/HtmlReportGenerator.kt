@@ -96,7 +96,8 @@ class HtmlReportGenerator(
                         // beschreibt den Stand seiner Erhebung, nicht den Stand von jetzt.
                         span { +"Katalogdaten: ${catalogProvenance(catalog)}" }
                     }
-                    catalog.sourceOrNull?.warnings?.takeIf { it.isNotEmpty() }?.let { warnings ->
+                    val notes = (catalog as? CatalogAccess.Available)?.notes ?: emptyList()
+                    (notes + (catalog.sourceOrNull?.warnings ?: emptyList())).takeIf { it.isNotEmpty() }?.let { warnings ->
                         div("catalog-warnings") {
                             warnings.forEach { warning -> div { +"⚠ $warning" } }
                         }

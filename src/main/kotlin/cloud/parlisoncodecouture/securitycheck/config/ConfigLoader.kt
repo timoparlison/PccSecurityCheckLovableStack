@@ -34,12 +34,17 @@ object ConfigLoader {
     private const val DEFAULT_SNAPSHOT_MAX_AGE_DAYS = 14L
     private const val SNAPSHOT_DIR = "input"
 
-    fun load(): SupabaseConfig {
+    /**
+     * @param requireServiceRoleKey false für Läufe, die das Zielsystem gar nicht anfassen
+     *   (z. B. der SQL-Export für den manuellen Snapshot-Weg). Dort wäre es unsinnig, einen
+     *   Key zu verlangen, den niemand benutzt.
+     */
+    fun load(requireServiceRoleKey: Boolean = true): SupabaseConfig {
         val (path, profile) = resolveConfigPath()
         if (!Files.exists(path)) throw ConfigNotFoundException(path, profile, discoverProfiles())
         val props = Properties()
         Files.newBufferedReader(path).use { props.load(it) }
-        return parse(props, profile)
+        return parse(props, profile, requireServiceRoleKey)
     }
 
     private fun resolveConfigPath(): Pair<Path, String?> {
@@ -72,7 +77,7 @@ object ConfigLoader {
         }
     }
 
-    private fun parse(props: Properties, profile: String?): SupabaseConfig {
+    private fun parse(props: Properties, profile: String?, requireServiceRoleKey: Boolean): SupabaseConfig {
         val url = required(props, "supabase.url").also { validateUrl(it) }
         val anonKey = required(props, "supabase.anon.key")
 
@@ -80,8 +85,9 @@ object ConfigLoader {
         warnIfSecretInFile(props, DB_PASSWORD_PROP, DB_PASSWORD_ENV)
         warnIfSecretInFile(props, ACCESS_TOKEN_PROP, ACCESS_TOKEN_ENV)
 
+        // Leerstring nur im Nicht-Zugriff-Modus; die HTTP-Checks laufen dort nicht.
         val serviceRoleKey = readRuntimeSecret(SERVICE_ROLE_ENV, SERVICE_ROLE_PROP)
-            ?: throw ServiceRoleKeyMissingException()
+            ?: if (requireServiceRoleKey) throw ServiceRoleKeyMissingException() else ""
         val dbPassword = readRuntimeSecret(DB_PASSWORD_ENV, DB_PASSWORD_PROP)
         val managementApiToken = readRuntimeSecret(ACCESS_TOKEN_ENV, ACCESS_TOKEN_PROP)
 

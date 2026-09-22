@@ -37,6 +37,11 @@ class JdbcCatalogSource(private val config: SupabaseConfig) : CatalogSource {
         }
     }
 
+    /** Baut die Verbindung auf; schlägt hier fehl, was später bei jeder Query fehlschlagen würde. */
+    override fun validate() {
+        connection.isValid(config.connectTimeoutSeconds.toInt())
+    }
+
     override fun query(query: CatalogQuery): List<Row> = query(query.statement())
 
     /** Führt beliebiges SELECT-SQL aus — für den Snapshot-Export als Gegenprobe nutzbar. */
