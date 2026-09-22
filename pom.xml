@@ -136,7 +136,12 @@
               Loads config/supabase-<ACTIVE_PROFILE>.properties.
               Only one check:
                 ACTIVE_PROFILE=fernau SINGLE_TEST=rls-status SUPABASE_SERVICE_ROLE_KEY=eyJh... mvn -q compile exec:java
-              For rls-status / permissive-policies you also need SUPABASE_DB_PASSWORD.
+              Die DB-basierten Checks brauchen eine Katalogquelle — eine von:
+                SUPABASE_DB_PASSWORD=...      (JDBC, read-only erzwungen)
+                SUPABASE_ACCESS_TOKEN=sbp_... (Management-API, kein DB-Passwort nötig)
+                ein manueller Snapshot unter input/
+              Snapshot-Statement fuer den manuellen Weg erzeugen (braucht keinen Zugang zum Zielsystem):
+                mvn -q compile exec:java -Dactive.profile=fernau -Dmode=sql-export
               Secrets are NEVER read from properties files.
             -->
             <plugin>

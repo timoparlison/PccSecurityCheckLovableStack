@@ -22,6 +22,53 @@ Jeder Test wird mit einer Sterne-Bewertung versehen. Diese bewertet **nicht** da
 
 ---
 
+## Woher die Katalogdaten kommen
+
+Fünf Checks (`rls-status`, `permissive-policies`, `storage-objects-rls`, `db-function-exposure` und das
+Runtime-Overlay von `plpgsql-secdef-audit`) lesen den **Datenbank-Katalog** von Postgres — also die
+internen Systemtabellen, in denen steht, welche Tabellen es gibt, ob RLS aktiv ist, welche Policies
+und Functions existieren und wer welche Rechte hat.
+
+Alle Abfragen sind reine `SELECT`s. Es wird im Zielsystem **nichts angelegt, geändert oder gelöscht**.
+
+Für den Zugriff gibt es drei Wege. Das Tool wählt automatisch den ersten verfügbaren; erzwingen lässt
+sich einer über `catalog.source` (`jdbc`, `mgmt-api`, `snapshot` oder `auto`).
+
+| Quelle | Womit | Wann sinnvoll |
+|---|---|---|
+| **JDBC** | DB-Passwort (`SUPABASE_DB_PASSWORD`) | Der Normalfall. Read-only wird hier vom Treiber **erzwungen**, nicht nur zugesichert. |
+| **Management-API** | Personal Access Token (`SUPABASE_ACCESS_TOKEN`) | Wenn das DB-Passwort nicht verfügbar ist, ein Dashboard-Zugang aber schon. Achtung: ein PAT ist account-weit und deutlich mächtiger als ein DB-Passwort. |
+| **Snapshot** | Eine manuell erhobene JSON-Datei | Wenn es gar keinen automatisierten Zugang gibt — etwa weil der Kunde nur bereit ist, ein SQL-Statement selbst auszuführen. |
+
+### Der manuelle Weg (Snapshot)
+
+```
+# 1. Statement erzeugen — braucht keinerlei Zugang zum Zielsystem
+mvn -q compile exec:java -Dactive.profile=<profil> -Dmode=sql-export
+#    → schreibt sql/<profil>-snapshot.sql
+
+# 2. Den Inhalt im Supabase-Dashboard unter "SQL Editor" ausführen
+# 3. Das Ergebnis als JSON exportieren und ablegen unter
+#    input/supabase-<profil>-snapshot.json
+
+# 4. Lauf starten wie immer
+ACTIVE_PROFILE=<profil> mvn -q compile exec:java
+```
+
+Ein Snapshot beschreibt den Stand **zum Zeitpunkt seiner Erhebung**. Damit daraus kein falscher
+Eindruck entsteht:
+
+- Der HTML-Report weist im Kopf aus, aus welcher Quelle die Daten stammen und — beim Snapshot —
+  von wann sie sind.
+- Ist der Snapshot älter als `snapshot.max.age.days` (Standard: 14), erscheint eine Warnung im Report.
+- Gehört der Snapshot zu einem **anderen Projekt** als das aktive Profil, bricht der Lauf ab. Ein
+  fremder Snapshot würde jeden einzelnen Befund verfälschen.
+
+Snapshots enthalten Policy-Definitionen und Function-Quelltext, also Kundendaten. `input/` und `sql/`
+sind deshalb — wie die Profil-Properties — per `.gitignore` ausgeschlossen.
+
+---
+
 ## 1. Konfiguration & Verbindungssicherheit
 
 ### `config-sanity` — Konfiguration & Schlüssel-Plausibilität
@@ -144,7 +191,7 @@ RLS ist das Herzstück der Datensicherheit in Supabase. Ohne RLS können eingelo
 - **Materialized Views und Foreign Tables** können gar kein RLS haben. Sind sie für `anon` lesbar, liegen die Daten offen.
 
 **Wie funktioniert der Test?**
-- Verbindet sich direkt (nur lesend, verschlüsselt) zur Postgres-Datenbank über JDBC.
+- Liest (nur lesend) den Datenbank-Katalog über eine der drei Katalogquellen (siehe „Woher die Katalogdaten kommen").
 - Liest aus dem Systemkatalog (`pg_class`, `pg_policy`) RLS-Status, Policy-Anzahl und View-Optionen und fragt per `has_table_privilege`/`has_any_column_privilege` die effektiven Rechte von `anon` und `authenticated` ab.
 - Bewertung Tabellen:
   - **Rot:** RLS aus und `anon`/`authenticated` haben Rechte.
@@ -240,7 +287,7 @@ Das `public`-Flag auf einem Bucket steuert nur den anonymen Lesezugriff. Alle an
 Dieser Test schließt eine wichtige Lücke, die `public-storage-buckets` allein nicht deckt. Er liest direkt aus dem Datenbankkatalog und ist daher sehr zuverlässig.
 
 **Bekannte Grenzen**
-- Er setzt Datenbank-Zugang voraus (wird ohne Passwort übersprungen).
+- Er setzt eine Katalogquelle voraus (wird ohne DB-Passwort, Management-Token oder Snapshot übersprungen).
 - Er erkennt wie `permissive-policies` keine subtilen Logikfehler in komplexen Regeln.
 
 ---

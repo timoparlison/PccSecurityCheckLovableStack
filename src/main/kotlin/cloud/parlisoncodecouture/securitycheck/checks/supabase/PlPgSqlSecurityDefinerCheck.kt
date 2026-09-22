@@ -9,7 +9,8 @@ import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
 import cloud.parlisoncodecouture.securitycheck.core.skipped
-import cloud.parlisoncodecouture.securitycheck.db.PostgresQueryClient
+import cloud.parlisoncodecouture.securitycheck.db.CatalogAccess
+import cloud.parlisoncodecouture.securitycheck.db.CatalogQuery
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -21,18 +22,19 @@ import kotlin.io.path.walk
 @CheckId(name = "plpgsql-secdef-audit")
 class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
     private val config: SupabaseConfig,
+    private val catalog: CatalogAccess,
     @Suppress("UNUSED_PARAMETER") httpClient: cloud.parlisoncodecouture.securitycheck.http.SupabaseHttpClient =
         cloud.parlisoncodecouture.securitycheck.http.SupabaseHttpClient(config),
     // Runtime-Overlay: liefert pro SECDEF-Function (Key lowercased — sowohl 'schema.name' als auch 'name')
     // true, wenn pg_proc.proconfig einen 'search_path=…'-Eintrag enthält. null = Lookup nicht möglich
-    // (z. B. kein DB-Zugang) → Befunde bleiben rein statisch. Tests können die Lookup-Funktion injizieren.
-    private val runtimeHardenedLookup: () -> Map<String, Boolean>? = { loadRuntimeHardenedSecdef(config) },
+    // (z. B. keine Katalogquelle) → Befunde bleiben rein statisch. Tests können die Lookup-Funktion injizieren.
+    private val runtimeHardenedLookup: () -> Map<String, Boolean>? = { loadRuntimeHardenedSecdef(catalog) },
 ) : SecurityCheck {
     override val name = "PL/pgSQL SECURITY DEFINER Audit"
     override val description =
         "Scannt lokale Migrations (*.sql) nach CREATE FUNCTION-Blöcken. Für SECURITY DEFINER-Functions " +
             "werden geprüft: explicit SET search_path, expliziter auth.uid()/role-Check, parametrisierte " +
-            "EXECUTE-Calls (USING) statt format()-Konkatenation. Wenn DB-Zugang verfügbar ist, wird das " +
+            "EXECUTE-Calls (USING) statt format()-Konkatenation. Wenn eine Katalogquelle verfügbar ist, wird das " +
             "Ergebnis mit pg_proc.proconfig abgeglichen — Functions, deren search_path durch eine spätere " +
             "ALTER FUNCTION-Migration runtime-gehärtet wurde, erscheinen als ACCEPTED statt RED."
     override val category = "Supabase / DB Functions"
@@ -182,9 +184,9 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
 
         val overlayNote = when {
             !runtimeAvailable ->
-                " Runtime-Overlay inaktiv (kein DB-Zugang) — RED-Findings können False Positives sein, " +
-                    "wenn spätere ALTER FUNCTION-Migrationen search_path setzen. SUPABASE_DB_PASSWORD setzen, " +
-                    "um den Live-Zustand abzugleichen."
+                " Runtime-Overlay inaktiv (keine Katalogquelle) — RED-Findings können False Positives sein, " +
+                    "wenn spätere ALTER FUNCTION-Migrationen search_path setzen. DB-Passwort, Management-Token " +
+                    "oder Snapshot bereitstellen, um den Live-Zustand abzugleichen."
             demotedToAccepted > 0 ->
                 " Runtime-Overlay aktiv: $demotedToAccepted statisch-RED Finding(s) wurden zu ACCEPTED " +
                     "demoted, weil pg_proc.proconfig search_path=… enthält."
@@ -208,42 +210,22 @@ class PlPgSqlSecurityDefinerCheck @JvmOverloads constructor(
         // (qualifiziert 'schema.name' und bare 'name'), damit die statische Regex-Erfassung
         // (die das Schema oft weglässt) zuverlässig auf den Runtime-Eintrag mappen kann.
         // Bei mehreren Overloads gilt: ANY-overload-hardened ⇒ als gehärtet werten (False-Positive-Vermeidung).
-        // Gibt null zurück, wenn DB-Zugang fehlt oder die Query scheitert — dann fällt der Check
+        // Gibt null zurück, wenn keine Katalogquelle verfügbar ist oder die Query scheitert — dann fällt der Check
         // auf rein-statisches Verhalten zurück.
-        private fun loadRuntimeHardenedSecdef(config: SupabaseConfig): Map<String, Boolean>? {
-            if (!config.hasDbAccess) return null
+        private fun loadRuntimeHardenedSecdef(catalog: CatalogAccess): Map<String, Boolean>? {
+            val source = catalog.sourceOrNull ?: return null
             return runCatching {
-                PostgresQueryClient(config).use { client ->
-                    val rows = client.query(
-                        """
-                        SELECT n.nspname AS schema_name,
-                               p.proname  AS name,
-                               p.proconfig
-                        FROM pg_proc p
-                        JOIN pg_namespace n ON n.oid = p.pronamespace
-                        WHERE p.prosecdef = true
-                          AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
-                        """.trimIndent(),
-                    ) { rs ->
-                        val schema = rs.getString("schema_name") ?: ""
-                        val name = rs.getString("name") ?: ""
-                        val arrayObj = rs.getArray("proconfig")
-                        val settings: Array<*> = (arrayObj?.array as? Array<*>) ?: emptyArray<Any?>()
-                        val hasSearchPath = settings.any {
-                            it is String && it.startsWith("search_path=", ignoreCase = true)
-                        }
-                        Triple(schema, name, hasSearchPath)
-                    }
-                    val map = mutableMapOf<String, Boolean>()
-                    for ((schema, name, hasSp) in rows) {
-                        if (name.isBlank()) continue
-                        val qualified = "$schema.$name".lowercase()
-                        val bare = name.lowercase()
-                        map.merge(qualified, hasSp) { old, new -> old || new }
-                        map.merge(bare, hasSp) { old, new -> old || new }
-                    }
-                    map
+                val map = mutableMapOf<String, Boolean>()
+                for (row in source.query(CatalogQuery.SECDEF_FUNCTIONS)) {
+                    val name = row.string("name") ?: continue
+                    if (name.isBlank()) continue
+                    val schema = row.string("schema_name") ?: ""
+                    val hasSearchPath = row.textArray("proconfig")
+                        .any { it.startsWith("search_path=", ignoreCase = true) }
+                    map.merge("$schema.$name".lowercase(), hasSearchPath) { old, new -> old || new }
+                    map.merge(name.lowercase(), hasSearchPath) { old, new -> old || new }
                 }
+                map
             }.getOrNull()
         }
     }

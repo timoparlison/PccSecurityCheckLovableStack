@@ -1,5 +1,6 @@
 package cloud.parlisoncodecouture.securitycheck.config
 
+import cloud.parlisoncodecouture.securitycheck.db.CatalogSourceKind
 import java.nio.file.Path
 
 data class SupabaseConfig(
@@ -18,6 +19,15 @@ data class SupabaseConfig(
     val dbName: String,
     val dbUser: String,
     val dbPassword: String?,
+    /** Personal Access Token für die Supabase Management-API — Alternative zum DB-Passwort. */
+    val managementApiToken: String?,
+    val managementApiUrl: String,
+    /** Erzwungene Katalogquelle; null = automatisch wählen (JDBC → Management-API → Snapshot). */
+    val catalogSource: CatalogSourceKind?,
+    /** Ablageort des manuell erhobenen Katalog-Snapshots. */
+    val snapshotPath: Path,
+    /** Ab wann ein Snapshot im Report als veraltet markiert wird. */
+    val snapshotMaxAgeDays: Long,
     /** Tabellennamen, deren anonyme Lesbarkeit bewusst akzeptiert ist (z. B. 'posts', 'public.articles'). */
     val allowlistTables: Set<String> = emptySet(),
     /** Storage-Bucket-Namen, deren public-Flag bewusst akzeptiert ist (z. B. 'avatars'). */
@@ -28,8 +38,13 @@ data class SupabaseConfig(
 
     fun resolvedDbHost(): String? = dbHost ?: projectRef?.let { "db.$it.supabase.co" }
 
+    /** Direkter JDBC-Zugang möglich (DB-Passwort + auflösbarer Host). */
     val hasDbAccess: Boolean
         get() = !dbPassword.isNullOrBlank() && !resolvedDbHost().isNullOrBlank()
+
+    /** Management-API nutzbar (PAT + project ref) — braucht kein DB-Passwort. */
+    val hasManagementApiAccess: Boolean
+        get() = !managementApiToken.isNullOrBlank() && !projectRef.isNullOrBlank()
 
     /** Case-insensitive Lookup; akzeptiert sowohl 'posts' als auch 'public.posts'. */
     fun isTableAllowlisted(table: String): Boolean {

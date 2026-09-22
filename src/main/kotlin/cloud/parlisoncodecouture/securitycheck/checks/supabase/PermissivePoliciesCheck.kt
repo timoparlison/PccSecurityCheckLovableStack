@@ -8,16 +8,18 @@ import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
 import cloud.parlisoncodecouture.securitycheck.core.skipped
-import cloud.parlisoncodecouture.securitycheck.db.PostgresQueryClient
+import cloud.parlisoncodecouture.securitycheck.db.CatalogAccess
+import cloud.parlisoncodecouture.securitycheck.db.CatalogQuery
 import java.time.Instant
 
 @CheckId(name = "permissive-policies")
 class PermissivePoliciesCheck(
     private val config: SupabaseConfig,
+    private val catalog: CatalogAccess,
 ) : SecurityCheck {
     override val name = "Permissive RLS-Policies"
     override val description =
-        "Liest pg_policies direkt via JDBC (read-only, SSL) und sucht typische Risiken: USING (true) bzw. " +
+        "Liest pg_policies (read-only) und sucht typische Risiken: USING (true) bzw. " +
             "WITH CHECK (true) auf anon/authenticated, asymmetrische SELECT-vs-UPDATE-Policies, fehlende " +
             "WITH CHECK bei INSERT/UPDATE. Es werden KEINE Functions im Zielsystem angelegt."
     override val category = "Supabase / RLS"
@@ -33,48 +35,29 @@ class PermissivePoliciesCheck(
 
     override fun run(): CheckResult {
         val start = Instant.now()
-        if (!config.hasDbAccess) {
-            return skipped(
-                "DB-Zugang fehlt. Setze SUPABASE_DB_PASSWORD (Env) bzw. -Dsupabase.db.password=... und " +
-                    "optional db.host in den properties.",
-                start,
-            )
-        }
+        val source = catalog.sourceOrNull ?: return skipped(catalog.reason ?: "Kein Katalogzugang.", start)
 
         val policies = try {
-            PostgresQueryClient(config).use { client ->
-                client.query(
-                    """
-                    SELECT tablename, policyname, cmd, roles, qual, with_check
-                    FROM pg_policies
-                    WHERE schemaname = 'public'
-                    ORDER BY tablename, policyname
-                    """.trimIndent(),
-                ) { rs ->
-                    val rolesArray = rs.getArray("roles")
-                    val rolesList = if (rolesArray != null) {
-                        (rolesArray.array as? Array<*>)?.mapNotNull { it?.toString() } ?: emptyList()
-                    } else emptyList()
-                    Policy(
-                        tableName = rs.getString("tablename"),
-                        policyName = rs.getString("policyname"),
-                        cmd = (rs.getString("cmd") ?: "").uppercase(),
-                        roles = rolesList,
-                        qual = rs.getString("qual")?.trim(),
-                        withCheck = rs.getString("with_check")?.trim(),
-                    )
-                }
+            source.query(CatalogQuery.POLICIES).map { row ->
+                Policy(
+                    tableName = row.string("tablename") ?: "?",
+                    policyName = row.string("policyname") ?: "?",
+                    cmd = (row.string("cmd") ?: "").uppercase(),
+                    roles = row.textArray("roles"),
+                    qual = row.string("qual")?.trim(),
+                    withCheck = row.string("with_check")?.trim(),
+                )
             }
         } catch (e: Exception) {
             return resultOf(
                 findings = listOf(
                     Finding(
                         CheckStatus.ERROR,
-                        "DB-Query fehlgeschlagen",
-                        "JDBC-Aufruf nach Postgres fehlgeschlagen: ${e.message ?: e::class.simpleName}",
+                        "Katalog-Query fehlgeschlagen",
+                        "Quelle: ${source.provenance}. Fehler: ${e.message ?: e::class.simpleName}",
                     ),
                 ),
-                summary = "DB nicht erreichbar oder Query fehlgeschlagen.",
+                summary = "Katalogdaten nicht lesbar.",
                 start = start,
             )
         }

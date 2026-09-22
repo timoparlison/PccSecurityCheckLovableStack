@@ -1,5 +1,6 @@
 package cloud.parlisoncodecouture.securitycheck.config
 
+import cloud.parlisoncodecouture.securitycheck.db.CatalogSourceKind
 import io.github.oshai.kotlinlogging.KotlinLogging
 import java.nio.file.Files
 import java.nio.file.Path
@@ -23,6 +24,15 @@ object ConfigLoader {
 
     private const val DB_PASSWORD_ENV = "SUPABASE_DB_PASSWORD"
     private const val DB_PASSWORD_PROP = "supabase.db.password"
+
+    // Personal Access Token für die Management-API. Env-Name bewusst wie bei der Supabase-CLI.
+    private const val ACCESS_TOKEN_ENV = "SUPABASE_ACCESS_TOKEN"
+    private const val ACCESS_TOKEN_PROP = "supabase.access.token"
+
+    private const val CATALOG_SOURCE_PROP = "catalog.source"
+    private const val DEFAULT_MANAGEMENT_API_URL = "https://api.supabase.com"
+    private const val DEFAULT_SNAPSHOT_MAX_AGE_DAYS = 14L
+    private const val SNAPSHOT_DIR = "input"
 
     fun load(): SupabaseConfig {
         val (path, profile) = resolveConfigPath()
@@ -68,10 +78,12 @@ object ConfigLoader {
 
         warnIfSecretInFile(props, SERVICE_ROLE_PROP, SERVICE_ROLE_ENV)
         warnIfSecretInFile(props, DB_PASSWORD_PROP, DB_PASSWORD_ENV)
+        warnIfSecretInFile(props, ACCESS_TOKEN_PROP, ACCESS_TOKEN_ENV)
 
         val serviceRoleKey = readRuntimeSecret(SERVICE_ROLE_ENV, SERVICE_ROLE_PROP)
             ?: throw ServiceRoleKeyMissingException()
         val dbPassword = readRuntimeSecret(DB_PASSWORD_ENV, DB_PASSWORD_PROP)
+        val managementApiToken = readRuntimeSecret(ACCESS_TOKEN_ENV, ACCESS_TOKEN_PROP)
 
         val projectRef = props.getProperty("supabase.project.ref")
             ?.trim()?.ifBlank { null }
@@ -89,6 +101,15 @@ object ConfigLoader {
         val dbPort = props.getProperty("db.port")?.toIntOrNull() ?: 5432
         val dbName = props.getProperty("db.name")?.trim()?.ifBlank { null } ?: "postgres"
         val dbUser = props.getProperty("db.user")?.trim()?.ifBlank { null } ?: "postgres"
+
+        val managementApiUrl = props.getProperty("management.api.url")?.trim()?.ifBlank { null }
+            ?: DEFAULT_MANAGEMENT_API_URL
+        val catalogSource = resolveCatalogSource(props)
+        val snapshotPath = props.getProperty("snapshot.path")?.trim()?.ifBlank { null }
+            ?.let { Path.of(it).toAbsolutePath() }
+            ?: Path.of(SNAPSHOT_DIR, "supabase-${profile ?: "default"}-snapshot.json").toAbsolutePath()
+        val snapshotMaxAgeDays = props.getProperty("snapshot.max.age.days")?.toLongOrNull()
+            ?: DEFAULT_SNAPSHOT_MAX_AGE_DAYS
 
         val allowlistTables = parseCsvSet(props.getProperty("allowlist.tables"))
         val allowlistBuckets = parseCsvSet(props.getProperty("allowlist.buckets"))
@@ -109,9 +130,27 @@ object ConfigLoader {
             dbName = dbName,
             dbUser = dbUser,
             dbPassword = dbPassword,
+            managementApiToken = managementApiToken,
+            managementApiUrl = managementApiUrl,
+            catalogSource = catalogSource,
+            snapshotPath = snapshotPath,
+            snapshotMaxAgeDays = snapshotMaxAgeDays,
             allowlistTables = allowlistTables,
             allowlistBuckets = allowlistBuckets,
         )
+    }
+
+    /** `catalog.source` erzwingt eine Quelle; 'auto' (Default) überlässt die Wahl CatalogSources. */
+    private fun resolveCatalogSource(props: Properties): CatalogSourceKind? {
+        val raw = System.getProperty(CATALOG_SOURCE_PROP)?.trim()?.ifBlank { null }
+            ?: props.getProperty(CATALOG_SOURCE_PROP)?.trim()?.ifBlank { null }
+            ?: return null
+        if (raw.equals("auto", ignoreCase = true)) return null
+        return CatalogSourceKind.byId(raw)
+            ?: throw IllegalArgumentException(
+                "Unbekannte catalog.source='$raw'. Erlaubt: auto, " +
+                    CatalogSourceKind.entries.joinToString(", ") { it.id }
+            )
     }
 
     private fun parseCsvSet(raw: String?): Set<String> =

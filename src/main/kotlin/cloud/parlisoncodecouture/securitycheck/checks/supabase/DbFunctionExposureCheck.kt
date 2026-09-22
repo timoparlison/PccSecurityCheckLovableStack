@@ -9,7 +9,9 @@ import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
 import cloud.parlisoncodecouture.securitycheck.core.skipped
-import cloud.parlisoncodecouture.securitycheck.db.PostgresQueryClient
+import cloud.parlisoncodecouture.securitycheck.db.CatalogAccess
+import cloud.parlisoncodecouture.securitycheck.db.CatalogQuery
+import cloud.parlisoncodecouture.securitycheck.db.Row
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
@@ -29,10 +31,11 @@ import kotlin.io.path.walk
 @CheckId(name = "db-function-exposure")
 class DbFunctionExposureCheck(
     private val config: SupabaseConfig,
+    private val catalog: CatalogAccess,
 ) : SecurityCheck {
     override val name = "DB-Functions: Live-Aufrufbarkeit (RPC)"
     override val description =
-        "Liest alle Functions im public-Schema live aus pg_proc (read-only, SSL) inkl. EXECUTE-Rechten " +
+        "Liest alle Functions im public-Schema aus pg_proc (read-only) inkl. EXECUTE-Rechten " +
             "für anon/authenticated, proconfig (search_path) und dem aktuellen Quelltext. SECURITY DEFINER-" +
             "Functions, die per /rest/v1/rpc aufrufbar sind, werden auf fehlenden search_path, fehlenden " +
             "auth-Check und unsicheres dynamisches SQL geprüft. Fundstellen werden, falls vorhanden, den " +
@@ -69,26 +72,20 @@ class DbFunctionExposureCheck(
 
     override fun run(): CheckResult {
         val start = Instant.now()
-        if (!config.hasDbAccess) {
-            return skipped(
-                "DB-Zugang fehlt. Setze SUPABASE_DB_PASSWORD (Env) bzw. -Dsupabase.db.password=... und " +
-                    "optional db.host in den properties.",
-                start,
-            )
-        }
+        val source = catalog.sourceOrNull ?: return skipped(catalog.reason ?: "Kein Katalogzugang.", start)
 
         val functions = try {
-            PostgresQueryClient(config).use { client -> client.query(FUNCTIONS_SQL, ::mapRow) }
+            source.query(CatalogQuery.FUNCTIONS).map(::mapRow)
         } catch (e: Exception) {
             return resultOf(
                 findings = listOf(
                     Finding(
                         CheckStatus.ERROR,
-                        "DB-Query fehlgeschlagen",
-                        "JDBC-Aufruf nach Postgres fehlgeschlagen: ${e.message ?: e::class.simpleName}",
+                        "Katalog-Query fehlgeschlagen",
+                        "Quelle: ${source.provenance}. Fehler: ${e.message ?: e::class.simpleName}",
                     ),
                 ),
-                summary = "DB nicht erreichbar oder Query fehlgeschlagen.",
+                summary = "Katalogdaten nicht lesbar.",
                 start = start,
             )
         }
@@ -130,20 +127,17 @@ class DbFunctionExposureCheck(
         return resultOf(findings, summary, start)
     }
 
-    private fun mapRow(rs: java.sql.ResultSet): LiveFunction {
-        val configArray = rs.getArray("proconfig")?.array as? Array<*>
-        return LiveFunction(
-            name = rs.getString("proname"),
-            identityArgs = rs.getString("args") ?: "",
-            securityDefiner = rs.getBoolean("prosecdef"),
-            proconfig = configArray?.mapNotNull { it?.toString() } ?: emptyList(),
-            owner = rs.getString("owner") ?: "?",
-            language = rs.getString("lanname") ?: "?",
-            anonExecute = rs.getBoolean("anon_execute"),
-            authenticatedExecute = rs.getBoolean("auth_execute"),
-            definition = rs.getString("definition") ?: "",
-        )
-    }
+    private fun mapRow(row: Row): LiveFunction = LiveFunction(
+        name = row.string("proname") ?: "?",
+        identityArgs = row.string("args") ?: "",
+        securityDefiner = row.boolean("prosecdef"),
+        proconfig = row.textArray("proconfig"),
+        owner = row.string("owner") ?: "?",
+        language = row.string("lanname") ?: "?",
+        anonExecute = row.boolean("anon_execute"),
+        authenticatedExecute = row.boolean("auth_execute"),
+        definition = row.string("definition") ?: "",
+    )
 
     /** Index der CREATE FUNCTION-Stellen in den Migrations — die zuletzt angelegte Version gewinnt. */
     internal class MigrationIndex(private val locations: Map<String, CodeLocation>) {
@@ -182,30 +176,6 @@ class DbFunctionExposureCheck(
     }
 
     companion object {
-        // Nur prokind='f': Procedures sind über PostgREST nicht per RPC aufrufbar, Trigger-Functions
-        // ebenfalls nicht. Functions, die zu einer Extension gehören, bleiben außen vor (eigener Check).
-        private val FUNCTIONS_SQL = """
-            SELECT p.proname,
-                   pg_get_function_identity_arguments(p.oid)                  AS args,
-                   p.prosecdef,
-                   p.proconfig,
-                   pg_get_userbyid(p.proowner)                                AS owner,
-                   l.lanname,
-                   has_function_privilege('anon', p.oid, 'EXECUTE')          AS anon_execute,
-                   has_function_privilege('authenticated', p.oid, 'EXECUTE') AS auth_execute,
-                   pg_get_functiondef(p.oid)                                  AS definition
-            FROM pg_proc p
-            JOIN pg_namespace n ON n.oid = p.pronamespace
-            JOIN pg_language  l ON l.oid = p.prolang
-            WHERE n.nspname = 'public'
-              AND p.prokind = 'f'
-              AND p.prorettype NOT IN ('trigger'::regtype, 'event_trigger'::regtype)
-              AND NOT EXISTS (
-                  SELECT 1 FROM pg_depend d
-                  WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e'
-              )
-            ORDER BY p.proname, args
-        """.trimIndent()
 
         /** Bewertet eine SECURITY DEFINER-Function; genau ein Finding pro Function. */
         internal fun evaluateSecdef(fn: LiveFunction, codeLoc: CodeLocation?, migrationsScanned: Boolean): Finding {

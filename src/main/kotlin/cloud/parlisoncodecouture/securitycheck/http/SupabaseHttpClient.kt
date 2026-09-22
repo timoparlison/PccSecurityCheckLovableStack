@@ -55,6 +55,25 @@ class SupabaseHttpClient(private val config: SupabaseConfig) {
         return execute(builder.build())
     }
 
+    /**
+     * POST an eine absolute URL mit reinem Bearer-Token und ohne apikey-Header — für die
+     * Supabase Management-API (api.supabase.com), die kein Projekt-Key-Paar kennt.
+     */
+    fun postJsonBearer(
+        absoluteUrl: String,
+        bearerToken: String,
+        jsonBody: String,
+    ): HttpResult {
+        val request = HttpRequest.newBuilder(URI.create(absoluteUrl))
+            .timeout(Duration.ofSeconds(config.requestTimeoutSeconds))
+            .header("Authorization", "Bearer $bearerToken")
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
+            .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+            .build()
+        return execute(request)
+    }
+
     /** GET an arbitrary absolute URL without Supabase auth headers (e.g. frontend bundles). */
     fun getAbsolute(absoluteUrl: String, extraHeaders: Map<String, String> = emptyMap()): HttpResult {
         val builder = HttpRequest.newBuilder(URI.create(absoluteUrl))

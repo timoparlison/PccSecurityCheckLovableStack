@@ -8,16 +8,19 @@ import cloud.parlisoncodecouture.securitycheck.core.Finding
 import cloud.parlisoncodecouture.securitycheck.core.SecurityCheck
 import cloud.parlisoncodecouture.securitycheck.core.resultOf
 import cloud.parlisoncodecouture.securitycheck.core.skipped
-import cloud.parlisoncodecouture.securitycheck.db.PostgresQueryClient
+import cloud.parlisoncodecouture.securitycheck.db.CatalogAccess
+import cloud.parlisoncodecouture.securitycheck.db.CatalogQuery
+import cloud.parlisoncodecouture.securitycheck.db.Row
 import java.time.Instant
 
 @CheckId(name = "rls-status")
 class RlsStatusCheck(
     private val config: SupabaseConfig,
+    private val catalog: CatalogAccess,
 ) : SecurityCheck {
     override val name = "RLS-Status & API-Rechte pro Relation (public-Schema)"
     override val description =
-        "Liest pg_class/pg_policy direkt via JDBC (read-only, SSL) für alle Tabellen, Views, Materialized " +
+        "Liest pg_class/pg_policy (read-only) für alle Tabellen, Views, Materialized " +
             "Views und Foreign Tables im public-Schema: ist RLS aktiv, wie viele Policies gibt es, laufen " +
             "Views mit security_invoker, und welche Rechte (SELECT/INSERT/UPDATE/DELETE) haben anon und " +
             "authenticated tatsächlich? Es werden KEINE Objekte im Zielsystem angelegt."
@@ -60,26 +63,20 @@ class RlsStatusCheck(
 
     override fun run(): CheckResult {
         val start = Instant.now()
-        if (!config.hasDbAccess) {
-            return skipped(
-                "DB-Zugang fehlt. Setze SUPABASE_DB_PASSWORD (Env) bzw. -Dsupabase.db.password=... und " +
-                    "optional db.host in den properties.",
-                start,
-            )
-        }
+        val source = catalog.sourceOrNull ?: return skipped(catalog.reason ?: "Kein Katalogzugang.", start)
 
         val relations = try {
-            PostgresQueryClient(config).use { client -> client.query(RELATIONS_SQL, ::mapRow) }
+            source.query(CatalogQuery.RELATIONS).map(::mapRow)
         } catch (e: Exception) {
             return resultOf(
                 findings = listOf(
                     Finding(
                         CheckStatus.ERROR,
-                        "DB-Query fehlgeschlagen",
-                        "JDBC-Aufruf nach Postgres fehlgeschlagen: ${e.message ?: e::class.simpleName}",
+                        "Katalog-Query fehlgeschlagen",
+                        "Quelle: ${source.provenance}. Fehler: ${e.message ?: e::class.simpleName}",
                     ),
                 ),
-                summary = "DB nicht erreichbar oder Query fehlgeschlagen.",
+                summary = "Katalogdaten nicht lesbar.",
                 start = start,
             )
         }
@@ -101,53 +98,30 @@ class RlsStatusCheck(
         return resultOf(findings, summary, start)
     }
 
-    private fun mapRow(rs: java.sql.ResultSet): Relation {
-        val optionsArray = rs.getArray("reloptions")?.array as? Array<*>
-        return Relation(
-            name = rs.getString("relname"),
-            kind = when (rs.getString("relkind")) {
-                "p" -> Kind.PARTITIONED
-                "v" -> Kind.VIEW
-                "m" -> Kind.MATVIEW
-                "f" -> Kind.FOREIGN
-                else -> Kind.TABLE
-            },
-            rlsEnabled = rs.getBoolean("relrowsecurity"),
-            rlsForced = rs.getBoolean("relforcerowsecurity"),
-            policyCount = rs.getInt("policy_count"),
-            options = optionsArray?.mapNotNull { it?.toString() } ?: emptyList(),
-            anon = Privileges(
-                rs.getBoolean("anon_select"), rs.getBoolean("anon_insert"),
-                rs.getBoolean("anon_update"), rs.getBoolean("anon_delete"),
-            ),
-            authenticated = Privileges(
-                rs.getBoolean("auth_select"), rs.getBoolean("auth_insert"),
-                rs.getBoolean("auth_update"), rs.getBoolean("auth_delete"),
-            ),
-        )
-    }
+    private fun mapRow(row: Row): Relation = Relation(
+        name = row.string("relname") ?: "?",
+        kind = when (row.string("relkind")) {
+            "p" -> Kind.PARTITIONED
+            "v" -> Kind.VIEW
+            "m" -> Kind.MATVIEW
+            "f" -> Kind.FOREIGN
+            else -> Kind.TABLE
+        },
+        rlsEnabled = row.boolean("relrowsecurity"),
+        rlsForced = row.boolean("relforcerowsecurity"),
+        policyCount = row.int("policy_count"),
+        options = row.textArray("reloptions"),
+        anon = Privileges(
+            row.boolean("anon_select"), row.boolean("anon_insert"),
+            row.boolean("anon_update"), row.boolean("anon_delete"),
+        ),
+        authenticated = Privileges(
+            row.boolean("auth_select"), row.boolean("auth_insert"),
+            row.boolean("auth_update"), row.boolean("auth_delete"),
+        ),
+    )
 
     companion object {
-        private val RELATIONS_SQL = """
-            SELECT c.relname,
-                   c.relkind::text                                            AS relkind,
-                   c.relrowsecurity,
-                   c.relforcerowsecurity,
-                   (SELECT count(*) FROM pg_policy pol WHERE pol.polrelid = c.oid) AS policy_count,
-                   c.reloptions,
-                   has_any_column_privilege('anon', c.oid, 'SELECT')          AS anon_select,
-                   has_any_column_privilege('anon', c.oid, 'INSERT')          AS anon_insert,
-                   has_any_column_privilege('anon', c.oid, 'UPDATE')          AS anon_update,
-                   has_table_privilege('anon', c.oid, 'DELETE')               AS anon_delete,
-                   has_any_column_privilege('authenticated', c.oid, 'SELECT') AS auth_select,
-                   has_any_column_privilege('authenticated', c.oid, 'INSERT') AS auth_insert,
-                   has_any_column_privilege('authenticated', c.oid, 'UPDATE') AS auth_update,
-                   has_table_privilege('authenticated', c.oid, 'DELETE')      AS auth_delete
-            FROM pg_class c
-            JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
-            ORDER BY c.relname
-        """.trimIndent()
 
         internal fun evaluate(rel: Relation): Finding {
             val label = "${rel.kind.label} 'public.${rel.name}'"

@@ -3,6 +3,7 @@ package cloud.parlisoncodecouture.securitycheck.report
 import cloud.parlisoncodecouture.securitycheck.config.SupabaseConfig
 import cloud.parlisoncodecouture.securitycheck.core.CheckResult
 import cloud.parlisoncodecouture.securitycheck.core.CheckStatus
+import cloud.parlisoncodecouture.securitycheck.db.CatalogAccess
 import cloud.parlisoncodecouture.securitycheck.core.CodeLocation
 import kotlinx.html.DIV
 import kotlinx.html.FlowContent
@@ -41,6 +42,11 @@ import java.time.format.DateTimeFormatter
 class HtmlReportGenerator(
     private val outputDir: Path = Path.of("reports"),
 ) {
+    private fun catalogProvenance(catalog: CatalogAccess): String = when (catalog) {
+        is CatalogAccess.Available -> catalog.source.provenance
+        is CatalogAccess.Unavailable -> "keine Quelle — katalogbasierte Checks übersprungen"
+    }
+
     private val fileFormatter =
         DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss").withZone(ZoneId.systemDefault())
     private val displayFormatter =
@@ -50,6 +56,7 @@ class HtmlReportGenerator(
         config: SupabaseConfig,
         runLabel: String,
         results: List<CheckResult>,
+        catalog: CatalogAccess,
     ): Path {
         Files.createDirectories(outputDir)
         val now = Instant.now()
@@ -57,7 +64,7 @@ class HtmlReportGenerator(
         val target = outputDir.resolve(filename)
         Files.newBufferedWriter(target, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING).use { writer ->
             writer.appendLine("<!DOCTYPE html>")
-            writer.appendHTML().html { renderHtml(config, runLabel, results, now) }
+            writer.appendHTML().html { renderHtml(config, runLabel, results, now, catalog) }
         }
         return target
     }
@@ -67,6 +74,7 @@ class HtmlReportGenerator(
         runLabel: String,
         results: List<CheckResult>,
         now: Instant,
+        catalog: CatalogAccess,
     ) {
         val overall = CheckStatus.worstOf(results.map { it.status })
         head {
@@ -84,6 +92,14 @@ class HtmlReportGenerator(
                         span { +"URL: ${config.url}" }
                         span { +"Lauf: $runLabel" }
                         span { +"Zeit: ${displayFormatter.format(now)}" }
+                        // Herkunft der Katalogdaten gehört sichtbar in den Report: ein Snapshot
+                        // beschreibt den Stand seiner Erhebung, nicht den Stand von jetzt.
+                        span { +"Katalogdaten: ${catalogProvenance(catalog)}" }
+                    }
+                    catalog.sourceOrNull?.warnings?.takeIf { it.isNotEmpty() }?.let { warnings ->
+                        div("catalog-warnings") {
+                            warnings.forEach { warning -> div { +"⚠ $warning" } }
+                        }
                     }
                     div("overall") {
                         attributes["style"] = "background:${overall.color}"
@@ -278,6 +294,11 @@ class HtmlReportGenerator(
         .container { max-width: 1040px; margin: 0 auto; }
         .card { background: white; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 20px; margin-bottom: 16px; }
         .report-header h1 { margin: 0 0 8px; font-size: 24px; }
+        .catalog-warnings {
+            margin: 12px 0 0; padding: 10px 12px; border-radius: 6px;
+            background: #fff8e1; border: 1px solid #f0c36d; color: #6b4e00; font-size: 13px;
+        }
+        .catalog-warnings div + div { margin-top: 6px; }
         .meta span { display: inline-block; margin-right: 16px; font-size: 13px; color: #6b7280; }
         .overall { display: inline-block; padding: 10px 16px; border-radius: 6px; color: white; font-weight: 600; margin: 12px 0 8px; }
         .counts { margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
